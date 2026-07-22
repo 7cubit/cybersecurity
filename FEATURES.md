@@ -1,4 +1,4 @@
-# /cubersecurity — full feature reference
+# /cybersecurity — full feature reference
 
 A complete tour of what this skill is, everything it can do, exactly how each piece
 works, and how to change it. If the [README](README.md) is the elevator pitch, this
@@ -8,7 +8,7 @@ is the manual.
 
 ## 1. What it is, in one paragraph
 
-`/cubersecurity` is a **defensive (blue-team) security review** skill for
+`/cybersecurity` is a **defensive (blue-team) security review** skill for
 [Claude Code](https://claude.com/claude-code). You hand it a static artifact you own
 — source code, a diff, a config file, a dependency manifest, an architecture
 description, or a log — and it runs **several frontier AI models over it in
@@ -368,7 +368,7 @@ Enforced in the prompt every model receives:
 ## 16. File map
 
 ```
-cubersecurity/
+cybersecurity/
 ├── SKILL.md                     # the skill definition Claude Code loads
 ├── README.md                    # overview + install + quick start
 ├── FEATURES.md                  # this document

@@ -1,8 +1,8 @@
-# /cubersecurity
+# /cybersecurity
 
 **A multi-model defensive security review skill for [Claude Code](https://claude.com/claude-code).**
 
-`/cubersecurity` turns a security question into a structured, cross-checked review.
+`/cybersecurity` turns a security question into a structured, cross-checked review.
 It fans one target (a repo, diff, config, dependency manifest, architecture doc, or
 log) out to several frontier models **in parallel**, has each one analyze it
 independently, then merges and reconciles their findings into a single prioritized
@@ -88,10 +88,10 @@ verifying access mode per model is the step most likely to trip you up.
 Copy the folder into your Claude Code skills directory:
 
 ```bash
-git clone https://github.com/7cubit/cubersecurity.git ~/.claude/skills/cubersecurity
+git clone https://github.com/7cubit/cybersecurity.git ~/.claude/skills/cybersecurity
 ```
 
-Then, in Claude Code, just ask for a security review — or type `/cubersecurity`. The
+Then, in Claude Code, just ask for a security review — or type `/cybersecurity`. The
 skill triggers on natural phrasing too ("is this safe?", "review this for vulns",
 "harden this config", "check these deps").
 

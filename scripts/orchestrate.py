@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-/cubersecurity ensemble orchestrator (reference implementation).
+/cybersecurity ensemble orchestrator (reference implementation).
 
 Fans a *static, user-owned* target out to a set of frontier models running in
 parallel, each producing structured security findings, then merges them (with
@@ -445,7 +445,7 @@ def _fallback_report(mode: str, merged: list[dict]) -> str:
 # ---------- main ----------
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="/cubersecurity ensemble orchestrator")
+    ap = argparse.ArgumentParser(description="/cybersecurity ensemble orchestrator")
     ap.add_argument("--mode", required=True, choices=list(MODES))
     ap.add_argument("--target", required=True,
                     help="repo path, file, diff, config, manifest, or inline description")

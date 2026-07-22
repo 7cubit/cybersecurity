@@ -1,6 +1,6 @@
-# Security review: cubersecurity (self-audit, code_review)
+# Security review: cybersecurity (self-audit, code_review)
 
-_Blue-team self-audit of the `/cubersecurity` tool itself. Two independent reviewers
+_Blue-team self-audit of the `/cybersecurity` tool itself. Two independent reviewers
 (primary + adversarial cross-check); every mechanical claim reproduced with `python3`
 against the real code. No files in the tool were modified; the orchestrator and the AI
 CLIs were never executed. Date: 2026-07-22._

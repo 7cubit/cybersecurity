@@ -1,5 +1,5 @@
 ---
-name: cubersecurity
+name: cybersecurity
 description: >-
   Run a defensive security review by fanning a target out across a multi-model
   ensemble (organizer + worker/decision tier) and consolidating the findings.
@@ -10,12 +10,12 @@ description: >-
   it even when the user just says things like "is this safe", "review this for
   vulns", "harden this", "what could go wrong with this design", or "check these
   deps" without using the word "security". Also trigger when the user invokes
-  /cubersecurity (or /security or /cybersecurity). Do NOT use this to produce
+  /cybersecurity (or /security). Do NOT use this to produce
   weaponized exploit code, malware, or to attack systems the user does not control
   — it identifies, assesses, and remediates, it does not weaponize.
 ---
 
-# /cubersecurity — multi-model defensive security review
+# /cybersecurity — multi-model defensive security review
 
 This skill turns a security question into a structured, cross-checked review by
 running several frontier models over the same target independently and then
