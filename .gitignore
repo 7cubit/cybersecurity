@@ -1,0 +1,31 @@
+# Generated review output
+security-review.md
+*-review.md
+out/
+reports/
+
+# Secrets — never commit these (this repo holds none by design)
+.env
+.env.*
+*.pem
+*.key
+*_key
+*_secret
+credentials.json
+secrets.yaml
+secrets.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
