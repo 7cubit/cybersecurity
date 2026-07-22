@@ -73,10 +73,15 @@ Nothing sensitive should ever end up in this repo; see the `.gitignore` and the
 | Gemini 3.1 Pro | high | Gemini CLI / Gemini API |
 | Kimi K3 | max | Kimi CLI / Moonshot (OpenAI-compatible) API |
 
+As configured, **all seven entries run via subscription CLIs — no API keys required.**
 Exact model strings, per-provider invocation, and which subscription can drive which
 model headlessly are documented in
 [`references/model-roster.md`](references/model-roster.md). **Read that first** —
 verifying access mode per model is the step most likely to trip you up.
+
+> 📖 **Full feature reference:** [`FEATURES.md`](FEATURES.md) documents every mode,
+> flag, config option, prompt-delivery method, guardrail, and extension point in
+> depth. This README is the quick start; that's the manual.
 
 ## Install
 

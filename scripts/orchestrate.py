@@ -22,7 +22,7 @@ HTTP endpoint. See references/model-roster.md and roster.yaml.
 """
 
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, tempfile, textwrap
+import argparse, json, os, re, shlex, subprocess, sys, tempfile, textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib import request as urlrequest, error as urlerror
@@ -136,14 +136,46 @@ def build_prompt(mode: str, target_text: str, brief: str) -> str:
 # ---------- model adapters ----------
 
 def run_cli(cmd_template: str, prompt: str, timeout: int) -> str:
-    # Prompt is delivered on stdin; the {prompt_file}/{prompt} tokens in the
-    # roster cmd are just markers of intent and are stripped here.
-    cmd = re.sub(r"\{prompt(_file)?\}", "", cmd_template).strip()
-    proc = subprocess.run(cmd, shell=True, input=prompt, text=True,
-                          capture_output=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(f"CLI exit {proc.returncode}: {proc.stderr[:400]}")
-    return proc.stdout
+    """Deliver the prompt to a subscription CLI, three supported ways:
+
+      * "{prompt_file}" in the cmd -> the prompt is written to a temp file and its
+        path is substituted (for CLIs that take a --prompt-file / path argument,
+        e.g. Grok Build's `--prompt-file`).
+      * "{prompt}" in the cmd      -> the prompt is shell-quoted and substituted
+        inline (for CLIs whose non-interactive flag takes the prompt as an argument,
+        e.g. `gemini -p <text>`, `kimi -p <text>`).
+      * neither token              -> the prompt is piped on stdin (the default;
+        works for `claude -p` and `codex exec`).
+
+    When the prompt is delivered by file or inline, stdin is redirected from
+    /dev/null so an interactive CLI can never block waiting on a TTY.
+    """
+    tmp_path = None
+    try:
+        cmd = cmd_template
+        stdin_data = prompt  # default delivery: stdin
+        if "{prompt_file}" in cmd:
+            fd, tmp_path = tempfile.mkstemp(prefix="cyber_prompt_", suffix=".txt")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(prompt)
+            cmd = cmd.replace("{prompt_file}", shlex.quote(tmp_path))
+            stdin_data = None
+        if "{prompt}" in cmd:
+            cmd = cmd.replace("{prompt}", shlex.quote(prompt))
+            stdin_data = None
+        cmd = re.sub(r"\{prompt(_file)?\}", "", cmd).strip()  # strip any stray token
+        if stdin_data is None:
+            proc = subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL,
+                                  text=True, capture_output=True, timeout=timeout)
+        else:
+            proc = subprocess.run(cmd, shell=True, input=stdin_data,
+                                  text=True, capture_output=True, timeout=timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(f"CLI exit {proc.returncode}: {proc.stderr[:400]}")
+        return proc.stdout
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def run_api(cfg: dict, prompt: str, timeout: int) -> str:

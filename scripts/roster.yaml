@@ -1,73 +1,73 @@
 # Model roster for the /cubersecurity ensemble.
+#
 # mode: "cli" (subscription-authenticated, cheap) or "api" (pay-per-token).
-# For cli mode, orchestrate.py runs `cmd` and pipes the prompt on stdin (the
-# {prompt_file} token is just a readability marker and is stripped). For api mode
-# it uses the OpenAI-compatible HTTP path with the given base_url + api_key_env.
 #
-# BRING YOUR OWN ACCESS: every entry authenticates against YOUR logged-in CLI or
-# YOUR own API key (read from the named env var). No credentials live in this file.
-# If you don't pay for a given model, delete it from `defaults.workers` — the
-# ensemble degrades gracefully to whatever you actually have.
+# Prompt delivery (see run_cli in orchestrate.py) is chosen by the token in `cmd`:
+#   * no token        -> prompt piped on stdin        (claude -p, codex exec)
+#   * {prompt_file}   -> prompt written to a temp file, path substituted (grok --prompt-file)
+#   * {prompt}        -> prompt shell-quoted inline    (gemini -p, kimi -p)
+# For api mode the OpenAI-compatible HTTP path is used with base_url + api_key_env.
 #
-# Verify the flagged items before a real run:
-#   - fable: whether your Claude *Max* seat can select claude-fable-5 (else use api)
-#   - grok/kimi: exact non-interactive CLI flags, or flip to api mode
+# BRING YOUR OWN ACCESS: every cli entry authenticates against YOUR logged-in CLI;
+# every api entry uses YOUR own key from the named env var. No credentials live in
+# this file. If you don't have a given model, delete it from `defaults.workers` —
+# the ensemble degrades gracefully to whatever you actually have.
 #
-# Effort/thinking is passed to the worker via the prompt wrapper in orchestrate.py;
-# where a provider takes a native flag, add it to `cmd`.
+# CLI invocations below were verified against the installed CLIs on 2026-07-22
+# (claude, codex, gemini, grok, kimi). Two model strings are still worth a glance
+# for your own install: `gemini-3.1-pro` (may carry a -preview suffix) and the
+# codex `gpt-5.6-*` ids. Grok (`grok-4.5`) and Kimi (`kimi-code/k3`) are confirmed.
 
 organizers:
   opus:
     mode: cli
     model: claude-opus-4-8
-    cmd: 'claude -p --model claude-opus-4-8 {prompt_file}'
+    cmd: 'claude -p --model claude-opus-4-8'          # prompt on stdin
   terra:
     mode: cli
     model: gpt-5.6-terra
-    cmd: 'codex exec --model gpt-5.6-terra {prompt_file}'
+    cmd: 'codex exec -m gpt-5.6-terra'                # prompt on stdin
   grok:
-    mode: api
+    mode: cli
     model: grok-4.5
-    base_url: 'https://api.x.ai/v1'
-    api_key_env: XAI_API_KEY
+    cmd: 'grok -m grok-4.5 --output-format plain --prompt-file {prompt_file}'
+    # api fallback: mode: api, base_url https://api.x.ai/v1, api_key_env XAI_API_KEY
 
 workers:
   fable:
     mode: cli
     model: claude-fable-5
     effort: max
-    cmd: 'claude -p --model claude-fable-5 {prompt_file}'
-    # fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
+    cmd: 'claude -p --model claude-fable-5'           # prompt on stdin
+    # api fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
 
   sol:
     mode: cli
     model: gpt-5.6-sol
-    effort: high            # "max" reasoning toggle
-    cmd: 'codex exec --model gpt-5.6-sol --reasoning high {prompt_file}'
-    # fallback: mode: api, OpenAI base_url, OPENAI_API_KEY
+    effort: high
+    cmd: 'codex exec -m gpt-5.6-sol -c model_reasoning_effort=high'   # stdin; effort via -c
+    # api fallback: mode: api, OpenAI base_url, api_key_env OPENAI_API_KEY
 
   grok:
-    mode: api               # flip to cli once Grok Build headless flag confirmed
+    mode: cli                # logged in via grok.com — no API key needed
     model: grok-4.5
     effort: high
-    base_url: 'https://api.x.ai/v1'
-    api_key_env: XAI_API_KEY
-    cmd: 'grok --print --model grok-4.5 {prompt_file}'   # VERIFY flag before using cli
+    cmd: 'grok -m grok-4.5 --effort high --output-format plain --prompt-file {prompt_file}'
+    # api fallback: mode: api, base_url https://api.x.ai/v1, api_key_env XAI_API_KEY
 
   gemini:
     mode: cli
-    model: gemini-3.1-pro   # VERIFY exact string (may carry a -preview suffix)
+    model: gemini-3.1-pro    # VERIFY exact string on your install (may be -preview)
     effort: high
-    cmd: 'gemini -m gemini-3.1-pro -p {prompt_file}'
-    # fallback: mode: api, Gemini/Vertex endpoint, GEMINI_API_KEY
+    cmd: 'gemini -m gemini-3.1-pro -p {prompt}'       # prompt inline
+    # api fallback: mode: api, Gemini/Vertex endpoint, api_key_env GEMINI_API_KEY
 
   kimi:
-    mode: api               # OpenAI-compatible; cleanest path for K3
-    model: kimi-k3          # VERIFY exact API model string (Moonshot aliases exist)
+    mode: cli                # OAuth-logged-in kimi-code CLI — no API key needed
+    model: kimi-code/k3      # real alias from ~/.kimi-code/config.toml (default_model)
     effort: max
-    base_url: 'https://platform.moonshot.ai/v1'
-    api_key_env: MOONSHOT_API_KEY
-    cmd: 'kimi --print --model kimi-k3 {prompt_file}'    # VERIFY flag before using cli
+    cmd: 'kimi -m kimi-code/k3 -p {prompt}'           # prompt inline
+    # api fallback: mode: api, base_url https://platform.moonshot.ai/v1, api_key_env MOONSHOT_API_KEY
 
 defaults:
   organizer: opus
