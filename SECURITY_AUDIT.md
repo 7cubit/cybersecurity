@@ -20,17 +20,27 @@ reproduced unless marked "design-judgment.")
 
 ## Remediation status (2026-07-22)
 
-**Fixed and regression-tested (17/17 checks passing):**
-- ✅ **HIGH — secret/PII leak:** `read_target()` now skips secret-looking files during a
-  directory walk (name/glob/dir denylist) and redacts secret-shaped strings from included
-  content, printing a stderr manifest of what was skipped/redacted. New flags
-  `--include-secrets` and `--no-redact`. Redaction is **best-effort** (pattern-based) — the
-  denylist + manifest are the primary controls.
-- ✅ **HIGH — prompt injection:** target is wrapped in an unguessable per-run nonce
-  delimiter, and the charter instructs every model to treat the target as untrusted data
-  and report (not obey) embedded instructions. Applied to the worker and recon passes.
-- ✅ **MEDIUM — end-of-run crash:** `parse_findings()` keeps only well-formed dict findings,
-  and `merge()`/synthesis are wrapped so a report is always written.
+**Fixed, then hardened after an adversarial re-verification pass (all regression checks
+passing — the second reviewer found real bypasses in the first cut of the redaction and
+they were closed):**
+- ✅ **HIGH — secret/PII leak:** `read_target()` skips secret-looking files (name/glob/dir
+  denylist) **before** the file-type filter, so `.env`, `id_rsa`, `*.pem`, `*.tfvars`,
+  `.aws/credentials` are actually caught and honestly counted in the stderr manifest. The
+  redaction pass was strengthened to catch the adversary's bypasses — JSON `"password":`
+  form, compound `SECRET_KEY =`, whole private-key **blocks** (not just the header),
+  WordPress `define('…KEY', …)`, connection strings, and vendor families (Stripe `sk_live_`,
+  Slack `xox…`, GitLab `glpat-`, Google `ya29.`, npm `npm_`) — while deliberately NOT
+  over-redacting normal code (`access_token = get_token()` is preserved). Flags
+  `--include-secrets` / `--no-redact`. Redaction remains **best-effort**; the denylist +
+  manifest are the primary controls.
+- ✅ **HIGH — prompt injection:** target wrapped in an unguessable per-run nonce delimiter;
+  charter instructs every model to treat it as untrusted data and report (not obey)
+  embedded instructions. Applied to the worker, recon, **and synthesis** passes (the
+  synthesis hole — injection via copied `evidence` fields — was found by the re-verify and
+  is now fenced too); the recon `brief` is framed as advisory-only.
+- ✅ **MEDIUM — end-of-run crash:** `parse_findings()` keeps only well-formed dict findings
+  and also survives deeply-nested input (catches `RecursionError`); `merge()`/synthesis are
+  wrapped so a report is always written.
 
 **Still open (deferred by owner):** the remaining MEDIUM/LOW items below (`shell=True`,
 silent ensemble degradation, `read_target` pipe/path handling, world-readable report,
