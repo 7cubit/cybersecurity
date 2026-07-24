@@ -16,13 +16,16 @@ Bring your own access: every model is driven through YOUR logged-in CLI subscrip
 or YOUR own API key (read from the env var named in roster.yaml). This script holds
 no credentials and must not be pointed at anyone else's accounts.
 
-Deps: PyYAML (`pip install pyyaml`); everything else is stdlib. CLI adapters shell
-out to your subscription-authenticated CLIs; API adapters use an OpenAI-compatible
-HTTP endpoint. See references/model-roster.md and roster.yaml.
+Deps: PyYAML (`pip install pyyaml`); everything else is stdlib. CLI adapters exec your
+subscription-authenticated CLIs directly (shell=False); API adapters use an
+OpenAI-compatible HTTPS endpoint. Optional: `gitleaks`/`trufflehog` on PATH for a second
+secret-scan pass (`--secret-scanner`). Per-model input caps + weighted agreement are set
+in roster.yaml; `--dry-run` previews the transmit manifest; `--sarif PATH` also emits
+SARIF for CI code scanning. See references/model-roster.md and roster.yaml.
 """
 
 from __future__ import annotations
-import argparse, fnmatch, json, os, re, secrets, shlex, subprocess, sys, tempfile, textwrap
+import argparse, fnmatch, json, os, re, secrets, shlex, shutil, subprocess, sys, tempfile, textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib import request as urlrequest, error as urlerror
@@ -102,6 +105,11 @@ RELEVANT_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".rb
 SKIP_DIRS = {".git", "node_modules", "vendor", "dist", "build", ".venv", "__pycache__"}
 MAX_TARGET_CHARS = 180_000  # keep the fan-out prompt bounded
 
+# Ceiling for passing a prompt as a single command-line argument ("{prompt}"
+# delivery). Linux caps one argv element at 128 KiB (MAX_ARG_STRLEN); stay well
+# under that so inline delivery never dies with OSError(E2BIG) mid-run.
+MAX_INLINE_PROMPT_BYTES = 100_000
+
 # Files/dirs that commonly hold secrets — skipped by default during a directory walk
 # so they are never transmitted to external providers (override with --include-secrets).
 SECRET_NAMES = {".env", ".env.local", ".env.production", ".env.development", ".envrc",
@@ -170,6 +178,69 @@ def _redact(text: str) -> tuple[str, int]:
     return _SECRET_RE.sub(_sub, text), count
 
 
+def _redact_literals(text: str, literals: set[str]) -> tuple[str, int]:
+    """Mask exact secret strings surfaced by an external scanner (belt-and-suspenders on
+    top of the regex pass). Longest-first so a substring can't unmask a superstring."""
+    count = 0
+    for lit in sorted((l for l in literals if l and len(l) >= 4), key=len, reverse=True):
+        if lit in text:
+            count += text.count(lit)
+            text = text.replace(lit, "[REDACTED-SECRET]")
+    return text, count
+
+
+def _scan_secrets_external(scanner: str, blob: str) -> set[str]:
+    """Best-effort: run an installed secret scanner over the assembled payload and return
+    the literal secret strings it found (to be redacted on top of the regex pass). NEVER
+    raises — any failure logs to stderr and yields an empty set, so the run degrades to the
+    built-in regex redaction rather than aborting a paid fan-out."""
+    if scanner not in ("gitleaks", "trufflehog"):
+        return set()
+    if not shutil.which(scanner):
+        print(f"[!] --secret-scanner {scanner}: '{scanner}' not on PATH; regex redaction only",
+              file=sys.stderr)
+        return set()
+    literals: set[str] = set()
+    tmp = rpt = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="cyber_scan_", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(blob)
+        if scanner == "gitleaks":  # v8: `dir` scans a file/dir; exit 1 == leaks found (ok)
+            rfd, rpt = tempfile.mkstemp(prefix="cyber_gitleaks_", suffix=".json")
+            os.close(rfd)
+            subprocess.run(["gitleaks", "dir", tmp, "-f", "json", "-r", rpt, "--no-banner"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            data = json.loads(Path(rpt).read_text() or "[]")
+            for item in (data if isinstance(data, list) else []):
+                s = item.get("Secret") or item.get("Match")
+                if s:
+                    literals.add(str(s))
+        else:  # trufflehog filesystem — newline-delimited JSON on stdout
+            # --no-verification is REQUIRED: without it trufflehog makes a live network call
+            # to each secret's vendor API carrying the candidate credential to test validity,
+            # which would exfiltrate the very secrets we are trying to redact. Detection alone
+            # yields the Raw literal we need; keep the scan strictly local/offline.
+            proc = subprocess.run(["trufflehog", "filesystem", tmp, "--json",
+                                   "--no-update", "--no-verification"],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            for line in proc.stdout.splitlines():
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                s = obj.get("Raw") or obj.get("RawV2")
+                if s:
+                    literals.add(str(s))
+    except Exception as e:  # noqa: BLE001 — scanner is best-effort, never abort the run
+        print(f"[!] secret scanner {scanner} failed ({e}); regex redaction only", file=sys.stderr)
+    finally:
+        for pth in (tmp, rpt):
+            if pth and os.path.exists(pth):
+                os.unlink(pth)
+    return literals
+
+
 def _manifest(included: int, skipped: list[str], redactions: int, inline: bool = False) -> None:
     where = "inline text" if inline else f"{included} file(s)"
     print(f"[*] target: prepared {where}; redacted {redactions} secret-shaped match(es); "
@@ -182,8 +253,27 @@ def _manifest(included: int, skipped: list[str], redactions: int, inline: bool =
               "unless --no-redact)", file=sys.stderr)
 
 
-def read_target(target: str, include_secrets: bool = False, redact: bool = True) -> str:
-    p = Path(target)
+def _cap(text: str, what: str, max_chars: int = MAX_TARGET_CHARS) -> str:
+    """Apply the read cap uniformly (single file, stdin, or inline text) and say so
+    loudly when truncation happens — never silently."""
+    if len(text) <= max_chars:
+        return text
+    print(f"[!] {what} is {len(text):,} chars; truncated to {max_chars:,} "
+          "for the fan-out (review the remainder in a follow-up run)", file=sys.stderr)
+    return (text[:max_chars] +
+            f"\n[... truncated at {max_chars} chars; "
+            f"review the remainder in a follow-up run ...]\n")
+
+
+def _looks_pathy(target: str) -> bool:
+    """Heuristic: does this string look like a file path (rather than inline text)?
+    Used to fail loudly on typos instead of 'reviewing' the path string itself."""
+    return (target.startswith(("/", "./", "../", "~")) or os.sep in target
+            or Path(target).suffix.lower() in RELEVANT_EXT)
+
+
+def read_target(target: str, include_secrets: bool = False, redact: bool = True,
+                max_chars: int = MAX_TARGET_CHARS) -> str:
     redactions = 0
 
     def _prep(body: str) -> str:
@@ -193,19 +283,44 @@ def read_target(target: str, include_secrets: bool = False, redact: bool = True)
             redactions += n
         return body
 
+    # Piped input: `--target /dev/stdin` (or `-`). Path('/dev/stdin').is_file() is
+    # False for a pipe, so this must be handled BEFORE any Path checks, otherwise a
+    # piped diff falls into the directory walk and "reviews" an empty file list.
+    if target in ("-", "/dev/stdin"):
+        text = _prep(_cap(sys.stdin.read(), "piped stdin", max_chars))
+        _manifest(0, [], redactions, inline=True)
+        return "### PIPED INPUT\n" + text
+
+    p = Path(target)
     if not p.exists():
+        if _looks_pathy(target):
+            sys.exit(f"error: target path does not exist: {target}\n"
+                     "       (check for a typo; to pass an inline description, "
+                     "quote text that is not path-shaped)")
         # treat as an inline description (e.g. an architecture summary for threat_model)
-        text = _prep(target)
+        text = _prep(_cap(target, "inline target", max_chars))
         _manifest(0, [], redactions, inline=True)
         return text
     if p.is_file():
         # an explicitly-named single file is reviewed (the user chose it) but still redacted
-        body = _prep(_read(p))
+        body = _prep(_cap(_read(p), str(p), max_chars))
         _manifest(1, [], redactions)
         return f"### FILE: {p}\n{body}"
+    if not p.is_dir():
+        # a pipe/device/symlink-to-stream that exists but is neither file nor dir:
+        # read it as a stream instead of "walking" it and finding nothing
+        body = _prep(_cap(_read(p), str(p), max_chars))
+        _manifest(1, [], redactions)
+        return f"### STREAM: {p}\n{body}"
     chunks, total, included, skipped = [], 0, 0, []
+    root = p.resolve()
     for f in sorted(p.rglob("*")):
         if f.is_dir() or any(part in SKIP_DIRS for part in f.parts):
+            continue
+        # symlink escape: a link whose target lands OUTSIDE the tree being reviewed
+        # is skipped, so reviewing a repo can never pull in ~/secrets.yaml & co.
+        if not f.resolve().is_relative_to(root):
+            skipped.append(f"{f.relative_to(p)} (symlink escapes target root)")
             continue
         # secret check FIRST, so secret files are counted/skipped even when their
         # extension isn't reviewable (.env, id_rsa, *.pem, .aws/credentials, *.tfstate)
@@ -216,8 +331,8 @@ def read_target(target: str, include_secrets: bool = False, redact: bool = True)
             continue
         body = _prep(_read(f))
         block = f"### FILE: {f.relative_to(p)}\n{body}\n"
-        if total + len(block) > MAX_TARGET_CHARS:
-            chunks.append(f"\n[... truncated at {MAX_TARGET_CHARS} chars; "
+        if total + len(block) > max_chars:
+            chunks.append(f"\n[... truncated at {max_chars} chars; "
                           f"review the remaining files in a follow-up run ...]\n")
             break
         chunks.append(block)
@@ -260,37 +375,54 @@ def run_cli(cmd_template: str, prompt: str, timeout: int) -> str:
       * "{prompt_file}" in the cmd -> the prompt is written to a temp file and its
         path is substituted (for CLIs that take a --prompt-file / path argument,
         e.g. Grok Build's `--prompt-file`).
-      * "{prompt}" in the cmd      -> the prompt is shell-quoted and substituted
-        inline (for CLIs whose non-interactive flag takes the prompt as an argument,
-        e.g. `gemini -p <text>`, `kimi -p <text>`).
+      * "{prompt}" in the cmd      -> the prompt is substituted inline as ONE argv
+        element (for CLIs whose non-interactive flag takes the prompt as an
+        argument, e.g. `kimi -p <text>`). Bounded by MAX_INLINE_PROMPT_BYTES —
+        a single argv element is capped at 128 KiB on Linux (MAX_ARG_STRLEN), so
+        oversize inline delivery raises a clear error instead of dying with
+        OSError(E2BIG) and silently dropping the worker.
       * neither token              -> the prompt is piped on stdin (the default;
-        works for `claude -p` and `codex exec`).
+        works for `claude -p`, `codex exec`, `gemini`).
 
-    When the prompt is delivered by file or inline, stdin is redirected from
-    /dev/null so an interactive CLI can never block waiting on a TTY.
+    The template is split into an argv list and executed with shell=False, so a
+    poisoned roster entry can not smuggle in shell syntax, and target content is
+    never reinterpreted by a shell. Tokens are substituted per-argument BEFORE the
+    content is inserted, so a literal "{prompt}" inside the target text is left
+    untouched. When the prompt is delivered by file or inline, stdin is redirected
+    from /dev/null so an interactive CLI can never block waiting on a TTY.
     """
+    argv = shlex.split(cmd_template)
     tmp_path = None
     try:
-        cmd = cmd_template
         stdin_data = prompt  # default delivery: stdin
-        if "{prompt_file}" in cmd:
-            fd, tmp_path = tempfile.mkstemp(prefix="cyber_prompt_", suffix=".txt")
-            with os.fdopen(fd, "w") as fh:
-                fh.write(prompt)
-            cmd = cmd.replace("{prompt_file}", shlex.quote(tmp_path))
-            stdin_data = None
-        if "{prompt}" in cmd:
-            cmd = cmd.replace("{prompt}", shlex.quote(prompt))
-            stdin_data = None
-        cmd = re.sub(r"\{prompt(_file)?\}", "", cmd).strip()  # strip any stray token
+        for i, arg in enumerate(argv):
+            if "{prompt_file}" in arg:
+                if tmp_path is None:
+                    fd, tmp_path = tempfile.mkstemp(prefix="cyber_prompt_", suffix=".txt")
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(prompt)
+                argv[i] = arg.replace("{prompt_file}", tmp_path)
+                stdin_data = None
+            elif "{prompt}" in arg:
+                size = len(prompt.encode("utf-8", errors="replace"))
+                if size > MAX_INLINE_PROMPT_BYTES:
+                    raise RuntimeError(
+                        f"prompt is {size:,} bytes, over the "
+                        f"{MAX_INLINE_PROMPT_BYTES:,}-byte limit for inline argv "
+                        "delivery (a single argument is capped at 128 KiB on Linux). "
+                        "Switch this worker to a stdin/file-delivery CLI entry or to "
+                        "api mode for large targets.")
+                argv[i] = arg.replace("{prompt}", prompt)
+                stdin_data = None
         if stdin_data is None:
-            proc = subprocess.run(cmd, shell=True, stdin=subprocess.DEVNULL,
+            proc = subprocess.run(argv, stdin=subprocess.DEVNULL,
                                   text=True, capture_output=True, timeout=timeout)
         else:
-            proc = subprocess.run(cmd, shell=True, input=stdin_data,
+            proc = subprocess.run(argv, input=stdin_data,
                                   text=True, capture_output=True, timeout=timeout)
         if proc.returncode != 0:
-            raise RuntimeError(f"CLI exit {proc.returncode}: {proc.stderr[:400]}")
+            # scrub secret-shaped strings before the error can reach the report
+            raise RuntimeError(f"CLI exit {proc.returncode}: {_redact(proc.stderr[:400])[0]}")
         return proc.stdout
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -302,6 +434,10 @@ def run_api(cfg: dict, prompt: str, timeout: int) -> str:
     key = os.environ.get(cfg.get("api_key_env", ""), "")
     if not key:
         raise RuntimeError(f"missing env {cfg.get('api_key_env')}")
+    base = cfg["base_url"].rstrip("/")
+    if not base.startswith("https://"):
+        # a hostile or typo'd http:// base_url would send the bearer key in clear
+        raise RuntimeError(f"api base_url must be https:// (got: {base})")
     body = json.dumps({
         "model": cfg["model"],
         "messages": [
@@ -310,13 +446,14 @@ def run_api(cfg: dict, prompt: str, timeout: int) -> str:
         ],
     }).encode()
     req = urlrequest.Request(
-        cfg["base_url"].rstrip("/") + "/chat/completions", data=body,
+        base + "/chat/completions", data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     try:
         with urlrequest.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
     except urlerror.HTTPError as e:
-        raise RuntimeError(f"API {e.code}: {e.read()[:400].decode(errors='replace')}")
+        # response bodies can echo secrets back; scrub before the error travels
+        raise RuntimeError(f"API {e.code}: {_redact(e.read()[:400].decode(errors='replace'))[0]}")
     return data["choices"][0]["message"]["content"]
 
 
@@ -328,7 +465,16 @@ def call_model(cfg: dict, prompt: str, timeout: int) -> str:
 
 # ---------- findings parsing & merge ----------
 
-def parse_findings(raw: str) -> list[dict]:
+def parse_findings(raw: str) -> list[dict] | None:
+    """Extract the findings array from a worker's raw output.
+
+    Returns a list of dict findings (possibly empty — the model legitimately
+    found nothing), or None when NO JSON array could be recovered at all (prose,
+    refusal, error page). The distinction matters: None must be reported as a
+    worker that failed to contribute, not recorded as "0 findings" — otherwise a
+    crashed or non-compliant worker silently looks like a clean bill of health
+    and skews the agreement counts.
+    """
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
     # Try the whole string first (a clean JSON array), then the outermost [...] slice
     # if the model wrapped it in prose. Keep ONLY dict elements, so a stray scalar such
@@ -345,7 +491,7 @@ def parse_findings(raw: str) -> list[dict]:
             continue
         if isinstance(parsed, list):
             return [x for x in parsed if isinstance(x, dict)]
-    return []
+    return None
 
 
 SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -357,7 +503,8 @@ def _key(f: dict) -> str:
     return f"{cat}|{loc}"
 
 
-def merge(by_worker: dict[str, list[dict]]) -> list[dict]:
+def merge(by_worker: dict[str, list[dict]], weights: dict[str, float] | None = None) -> list[dict]:
+    weights = weights or {}
     merged: dict[str, dict] = {}
     for worker, findings in by_worker.items():
         for f in findings:
@@ -372,13 +519,80 @@ def merge(by_worker: dict[str, list[dict]]) -> list[dict]:
     out = []
     for m in merged.values():
         sevs = m.pop("severities")
-        m["agreement"] = sorted(m["agreement"])
-        m["agreement_count"] = len(m["agreement"])
+        agr = sorted(m["agreement"])
+        m["agreement"] = agr
+        m["agreement_count"] = len(agr)
+        # weighted agreement: a stronger model's vote can count for more (roster `weight`).
+        m["agreement_weight"] = round(sum(float(weights.get(w, 1.0)) for w in agr), 3)
         m["severity"] = max(sevs, key=lambda s: SEV_RANK.get(s, 0))
         m["severity_disagreement"] = len(set(sevs)) > 1
         out.append(m)
-    out.sort(key=lambda x: (-SEV_RANK.get(x["severity"], 0), -x["agreement_count"]))
+    out.sort(key=lambda x: (-SEV_RANK.get(x["severity"], 0),
+                            -x.get("agreement_weight", 0), -x["agreement_count"]))
     return out
+
+
+# ---------- SARIF export ----------
+
+_SARIF_LEVEL = {"critical": "error", "high": "error", "medium": "warning",
+                "low": "note", "info": "note"}
+
+
+def _split_location(loc: str) -> tuple[str, int | None]:
+    loc = str(loc or "").strip()
+    if not loc:
+        return "unknown", None
+    m = re.match(r"^(.*?):(\d+)(?::\d+)?(?:-\d+)?$", loc)   # file:line[:col][-line] (non-greedy)
+    if m and m.group(1).strip():
+        return m.group(1).strip(), int(m.group(2))
+    return loc, None
+
+
+def to_sarif(merged: list[dict], mode: str) -> str:
+    """Emit findings as SARIF 2.1.0 so GitHub/GitLab/SonarQube can annotate the exact lines
+    in a pull request. Severity maps to SARIF level; agreement metadata rides in properties."""
+    rules: dict[str, dict] = {}
+    results = []
+    for f in merged:
+        cat = (str(f.get("category") or "finding").strip() or "finding")
+        level = _SARIF_LEVEL.get(str(f.get("severity", "info")).lower(), "note")
+        rules.setdefault(cat, {"id": cat, "name": cat,
+                               "shortDescription": {"text": cat},
+                               "defaultConfiguration": {"level": level}})
+        uri, line = _split_location(f.get("location", ""))
+        phys = {"artifactLocation": {"uri": uri or "unknown"}}
+        if line and line >= 1:
+            phys["region"] = {"startLine": line}
+        results.append({
+            "ruleId": cat,
+            "level": level,
+            "message": {"text": str(f.get("title") or f.get("impact") or "security finding")},
+            "locations": [{"physicalLocation": phys}],
+            "properties": {
+                "severity": str(f.get("severity", "info")).lower(),
+                "confidence": f.get("confidence"),
+                "agreement_count": f.get("agreement_count"),
+                "agreement_weight": f.get("agreement_weight"),
+                "agreement": f.get("agreement"),
+                "evidence": f.get("evidence"),
+                "impact": f.get("impact"),
+                "remediation": f.get("remediation"),
+            },
+        })
+    doc = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "cybersecurity-ensemble",
+                "informationUri": "https://github.com/7cubit/cybersecurity",
+                "rules": list(rules.values()),
+            }},
+            "properties": {"mode": mode},
+            "results": results,
+        }],
+    }
+    return json.dumps(doc, indent=2)
 
 
 # ---------- organizer passes ----------
@@ -394,7 +608,7 @@ def organizer_brief(org_cfg: dict, mode: str, target_text: str, timeout: int) ->
     try:
         return "Phase-1 checklist:\n" + call_model(org_cfg, prompt, timeout).strip()
     except Exception as e:  # noqa: BLE001
-        return f"(recon skipped: {e})"
+        return f"(recon skipped: {_redact(str(e))[0]})"
 
 
 def organizer_synthesis(org_cfg: dict, mode: str, brief: str,
@@ -403,8 +617,9 @@ def organizer_synthesis(org_cfg: dict, mode: str, brief: str,
     prompt = (CHARTER +
               "\nPhase 4 — synthesis. Below are de-duplicated findings from an "
               "ensemble of models, each tagged with how many workers raised it "
-              "(agreement_count) and whether they disagreed on severity. "
-              "Resolve remaining conflicts, drop clear false positives (state a "
+              "(agreement_count), the weighted agreement (agreement_weight, which "
+              "counts stronger models' votes for more), and whether they disagreed on "
+              "severity. Resolve remaining conflicts, drop clear false positives (state a "
               "one-line reason), and write the final defensive report.\n\n"
               "Use EXACTLY this markdown structure:\n"
               "# Security review: <target> (" + mode + ")\n"
@@ -423,7 +638,8 @@ def organizer_synthesis(org_cfg: dict, mode: str, brief: str,
         report = call_model(org_cfg, prompt, timeout)
     except Exception as e:  # noqa: BLE001
         report = _fallback_report(mode, merged)  # deterministic if organizer fails
-        report += f"\n\n_(organizer synthesis unavailable: {e}; showing merged findings)_"
+        report += (f"\n\n_(organizer synthesis unavailable: {_redact(str(e))[0]}; "
+                   "showing merged findings)_")
     if failures:
         report += "\n\n## Ensemble notes\n" + "\n".join(f"- {x}" for x in failures)
     return report
@@ -434,12 +650,67 @@ def _fallback_report(mode: str, merged: list[dict]) -> str:
     for f in merged:
         sev = str(f.get("severity", "info")).upper()
         lines += [f"### [{sev}] {f.get('title','(untitled)')}  "
-                  f"(agreement: {f.get('agreement_count','?')}, confidence: {f.get('confidence','?')})",
+                  f"(agreement: {f.get('agreement_count','?')}, "
+                  f"weight: {f.get('agreement_weight','?')}, confidence: {f.get('confidence','?')})",
                   f"- **Where:** {f.get('location','?')}",
                   f"- **Evidence:** {f.get('evidence','')}",
                   f"- **Impact:** {f.get('impact','')}",
                   f"- **Fix:** {f.get('remediation','')}", ""]
     return "\n".join(lines)
+
+
+# ---------- output & config helpers ----------
+
+def _write_private(path: str, data: str) -> None:
+    """Write owner-only (0600) — a report/SARIF can quote flagged code and error text and
+    shouldn't be world-readable on a shared host."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        # tighten BEFORE writing the sensitive bytes — O_CREAT's mode is ignored when the
+        # file already exists, so a pre-existing looser file would otherwise expose the
+        # content in the window between write and a later chmod.
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        fh.write(data)
+
+
+def _worker_cap(cfg: dict, default: int) -> int:
+    try:
+        v = int(cfg.get("max_chars", default))
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _worker_weight(cfg: dict) -> float:
+    try:
+        w = float(cfg.get("weight", 1.0))
+        return w if w > 0 else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _print_dry_run(args, org_key: str, org_cfg: dict, worker_cfgs: dict,
+                   caps: dict, weights: dict, target_text: str) -> None:
+    def prov(cfg):
+        return f"{cfg.get('model', '?')} [{'api' if cfg.get('mode') == 'api' else 'cli'}]"
+    nbytes = len(target_text.encode("utf-8", "replace"))
+    lines = [
+        "──────────  DRY RUN — nothing will be transmitted  ──────────",
+        f"mode:        {args.mode}",
+        f"target:      {args.target}",
+        f"prepared:    {len(target_text):,} chars / {nbytes:,} bytes "
+        f"(after skip + redaction; engine: {args.secret_scanner})",
+        f"organizer:   {org_key}  ->  {prov(org_cfg)}",
+        f"workers:     {len(worker_cfgs)}  ->  would send the target to:",
+    ]
+    for name, cfg in worker_cfgs.items():
+        lines.append(f"   - {name:<8} {prov(cfg):<26} cap={caps[name]:,} chars  weight={weights[name]}")
+    lines.append(f"out:         {args.out}" + (f"   + SARIF: {args.sarif}" if args.sarif else ""))
+    lines.append("Re-run WITHOUT --dry-run to send the above to these providers.")
+    print("\n".join(lines))
 
 
 # ---------- main ----------
@@ -458,6 +729,16 @@ def main() -> None:
                     help="do NOT skip secret-looking files in a directory walk (still redacted)")
     ap.add_argument("--no-redact", action="store_true",
                     help="do NOT redact secret-shaped strings from included content")
+    ap.add_argument("--secret-scanner", default="regex", choices=["regex", "gitleaks", "trufflehog"],
+                    help="secret-redaction engine; gitleaks/trufflehog (if installed) run in "
+                         "ADDITION to the built-in regex pass")
+    ap.add_argument("--max-chars", type=int, default=None,
+                    help="override the default per-model input character cap")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print the transmit manifest (bytes, providers, redactions) and exit "
+                         "before any model is called")
+    ap.add_argument("--sarif", default=None, metavar="PATH",
+                    help="also write findings as SARIF 2.1.0 JSON to PATH (for CI code scanning)")
     ap.add_argument("--roster", default=str(HERE / "roster.yaml"))
     ap.add_argument("--out", default="security-review.md")
     args = ap.parse_args()
@@ -465,54 +746,102 @@ def main() -> None:
     roster = yaml.safe_load(Path(args.roster).read_text())
     d = roster.get("defaults", {})
     timeout = int(d.get("timeout_seconds", 600))
+    # a non-positive --max-chars (or 0) is meaningless (a negative cap would slice the target
+    # from the END); fall back to the roster/default rather than honoring it.
+    global_cap = (args.max_chars if (args.max_chars or 0) > 0
+                  else int(d.get("max_target_chars", MAX_TARGET_CHARS)))
 
     org_key = args.organizer or d.get("organizer", "opus")
+    if org_key not in roster["organizers"]:
+        sys.exit(f"error: unknown organizer '{org_key}' — "
+                 f"roster defines: {', '.join(roster['organizers'])}")
     org_cfg = roster["organizers"][org_key]
 
     if args.workers:
         worker_keys = [w.strip() for w in args.workers.split(",")]
     else:
         worker_keys = d.get("quick_workers" if args.quick else "workers", [])
+    unknown = [k for k in worker_keys if k not in roster["workers"]]
+    if unknown:
+        sys.exit(f"error: unknown worker(s) {', '.join(unknown)} — "
+                 f"roster defines: {', '.join(roster['workers'])}")
     worker_cfgs = {k: roster["workers"][k] for k in worker_keys}
+    caps = {k: _worker_cap(cfg, global_cap) for k, cfg in worker_cfgs.items()}
+    weights = {k: _worker_weight(cfg) for k, cfg in worker_cfgs.items()}
+    read_cap = max(list(caps.values()) + [global_cap])
 
     print(f"[*] mode={args.mode} organizer={org_key} workers={worker_keys}", file=sys.stderr)
     target_text = read_target(args.target,
                               include_secrets=args.include_secrets,
-                              redact=not args.no_redact)
+                              redact=not args.no_redact,
+                              max_chars=read_cap)
+
+    # optional second secret-scan pass over the assembled payload (belt-and-suspenders on
+    # top of the regex redaction that already ran inside read_target)
+    if not args.no_redact and args.secret_scanner != "regex":
+        target_text, extra = _redact_literals(
+            target_text, _scan_secrets_external(args.secret_scanner, target_text))
+        if extra:
+            print(f"[*] {args.secret_scanner}: redacted {extra} additional secret(s)",
+                  file=sys.stderr)
+
+    if args.dry_run:
+        _print_dry_run(args, org_key, org_cfg, worker_cfgs, caps, weights, target_text)
+        return
 
     brief = ("Phase-1 checklist: (skipped)" if args.skip_recon
              else organizer_brief(org_cfg, args.mode, target_text, timeout))
     print("[*] phase 1 done", file=sys.stderr)
 
-    prompt = build_prompt(args.mode, target_text, brief)
     by_worker: dict[str, list[dict]] = {}
     failures: list[str] = []
 
+    def _run_one(name: str, cfg: dict) -> str:
+        # per-model cap: each worker sees the target truncated to ITS max_chars, so a
+        # big-context model can read more and an inline (-p) model stays under the arg limit.
+        wtext = target_text
+        if 0 < caps[name] < len(target_text):
+            wtext = (target_text[:caps[name]] +
+                     f"\n[... truncated to {name}'s {caps[name]}-char cap ...]\n")
+        return call_model(cfg, build_prompt(args.mode, wtext, brief), timeout)
+
     with ThreadPoolExecutor(max_workers=int(d.get("concurrency", 5))) as ex:
-        futs = {ex.submit(call_model, cfg, prompt, timeout): name
+        futs = {ex.submit(_run_one, name, cfg): name
                 for name, cfg in worker_cfgs.items()}
         for fut in as_completed(futs):
             name = futs[fut]
             try:
                 findings = parse_findings(fut.result())
+                if findings is None:
+                    # unparseable output (prose/refusal/error) is a NON-CONTRIBUTION,
+                    # never "0 findings" — otherwise agreement counts quietly lie
+                    failures.append(f"{name}: returned no parseable findings JSON "
+                                    "(excluded from the ensemble, not counted as 0 findings)")
+                    print(f"[!] {name}: no parseable findings JSON — excluded from ensemble",
+                          file=sys.stderr)
+                    continue
                 by_worker[name] = findings
                 print(f"[+] {name}: {len(findings)} findings", file=sys.stderr)
             except Exception as e:  # noqa: BLE001
-                failures.append(f"{name} failed: {e}")
+                failures.append(f"{name} failed: {_redact(str(e))[0]}")
                 print(f"[!] {name} failed: {e}", file=sys.stderr)
 
+    print(f"[*] {len(by_worker)}/{len(worker_cfgs)} workers contributed usable findings",
+          file=sys.stderr)
+
     try:
-        merged = merge(by_worker)
+        merged = merge(by_worker, weights)
     except Exception as e:  # noqa: BLE001 — never lose a paid run over a merge hiccup
         print(f"[!] merge failed ({e}); falling back to flat findings", file=sys.stderr)
         merged = []
         for wname, fs in by_worker.items():
             for f in fs:
                 if isinstance(f, dict):
-                    d = dict(f)
-                    d["agreement"] = [wname]
-                    d["agreement_count"] = 1
-                    merged.append(d)
+                    flat = dict(f)
+                    flat["agreement"] = [wname]
+                    flat["agreement_count"] = 1
+                    flat["agreement_weight"] = weights.get(wname, 1.0)
+                    merged.append(flat)
     print(f"[*] merged into {len(merged)} unique findings", file=sys.stderr)
 
     try:
@@ -520,8 +849,12 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001 — deterministic fallback so a report ALWAYS lands
         print(f"[!] synthesis failed ({e}); writing deterministic merged report", file=sys.stderr)
         report = _fallback_report(args.mode, merged)
-    Path(args.out).write_text(report)
-    print(f"[✓] report written to {args.out}", file=sys.stderr)
+    # vulnerability detail + redacted context is owner-only, not world-readable
+    _write_private(args.out, report)
+    print(f"[✓] report written to {args.out} (mode 0600)", file=sys.stderr)
+    if args.sarif:
+        _write_private(args.sarif, to_sarif(merged, args.mode))
+        print(f"[✓] SARIF written to {args.sarif} (mode 0600)", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ the same target and returns structured findings):
 | Claude Fable 5 | max | Claude Code / Anthropic API |
 | GPT-5.6 Sol | max | Codex CLI / OpenAI API |
 | Grok 4.5 | high | Grok Build CLI / xAI API |
-| Gemini 3.1 Pro | high (thinking) | Gemini CLI / Gemini API |
+| Gemini (AGY default model) | high | Antigravity (AGY) CLI / Gemini API |
 | Kimi K3 (Max) | max (always-on) | Kimi Code CLI / Moonshot OpenAI-compatible API |
 
 This is the same fan-out pattern as a standard ensemble harness; the roster is

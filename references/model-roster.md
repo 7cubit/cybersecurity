@@ -18,7 +18,7 @@ or whether you need a separate pay-per-token API key.** Those are different prod
 | --- | --- | --- | --- |
 | Anthropic | Claude Max | **Claude Code** (`claude -p`) | **Yes** — the standard headless path. Note: Opus 4.8 is confirmed; whether **Fable 5** is selectable under a *Max* seat vs. requiring API access is the one Anthropic-side item to verify in your model settings. |
 | OpenAI | ChatGPT Plus | **Codex CLI** (`codex exec`), auth'd with your ChatGPT account | **Yes** — Plus grants GPT-5.6 **Sol** at medium+ effort, and the "max" reasoning toggle. Terra/Luna also available. |
-| Google | Gemini Ultra | **Gemini CLI** (`gemini -p`), OAuth login | **Yes** — OAuth login uses your subscription quota (not just API-key mode); Ultra grants Gemini 3.1 Pro with higher limits. |
+| Google | Gemini Ultra / AI Pro | **Antigravity (AGY) CLI** (`agy --print`) | **Yes** — AGY is Google's supported subscription path. The standalone **Gemini CLI no longer accepts individual subscription logins** (Google `IneligibleTierError`: "migrate to the Antigravity suite", confirmed on this machine 2026-07-24). |
 | xAI | Grok (SuperGrok / Premium+) | **Grok Build CLI** (`grok`) **or** xAI API | **Verify.** Grok Build CLI exists (`x.ai/cli`) and there's free promo usage, but confirm whether it authenticates against your *subscription* or expects an `XAI_API_KEY`. If CLI-subscription auth isn't supported, use the API (separate billing). |
 | Moonshot | Kimi plan | **Kimi Code CLI** **or** Moonshot OpenAI-compatible API | **Verify.** Kimi K3 has a CLI and an OpenAI-compatible API (`platform.moonshot.ai`). The cleanest ensemble path is the OpenAI-compatible API since it drops into any OpenAI client; confirm whether your Kimi subscription covers CLI headless use or if you want an API key. |
 
@@ -38,9 +38,9 @@ cheaper 2–3 model subset as the default.
 ## Exact models & invocation
 
 Effort/thinking settings map to the spec: "sol max" → Sol at max effort,
-"grok4.5 max" → Grok at high effort, "gemini 3.1 pro high" → 3.1 Pro high thinking,
-"kimi 3" → K3 Max (which currently only runs at max thinking anyway), "fable 5 max"
-→ Fable 5.
+"grok4.5 max" → Grok at high effort, "gemini high" → the AGY default model at its
+high setting, "kimi 3" → K3 Max (which currently only runs at max thinking anyway),
+"fable 5 max" → Fable 5.
 
 ### Organizer options
 - **Claude Opus 4.8** — id `claude-opus-4-8`; `claude -p --model claude-opus-4-8`
@@ -54,20 +54,31 @@ Effort/thinking settings map to the spec: "sol max" → Sol at max effort,
   or OpenAI API.
 - **Grok 4.5** — `grok-4.5`, reasoning effort `high` (dial is low/medium/high, default
   high); Grok Build CLI or xAI API (`/v1/responses`).
-- **Gemini 3.1 Pro** — Gemini CLI (`gemini -m gemini-3.1-pro -p ...`), thinking `high`;
-  or Gemini API / Vertex AI. **Verify the exact model string** (`gemini-3.1-pro` vs a
-  `-preview` suffix) against `gemini` at the time you wire it.
-- **Kimi K3** — Moonshot OpenAI-compatible endpoint (base URL `https://platform.moonshot.ai/v1`
-  or the current Moonshot base), model id in the `kimi-k3` family — **verify the exact
-  API model string** (Moonshot sometimes exposes `moonshot-v1`-style aliases). Or Kimi
-  Code CLI. K3 Max, always-on max thinking.
+- **Gemini (via AGY)** — Antigravity CLI: `agy --print '<prompt>'` (the prompt goes
+  **inline as one argv element** — AGY has no stdin or file prompt mode, so
+  `orchestrate.py` caps inline delivery at 100,000 bytes and points you to the API
+  for larger targets). **Do not add `--model` or `--effort`** — both flags make
+  AGY's print mode drop the prompt and answer about the setting instead (verified
+  broken 2026-07-24); the worker runs AGY's default model (self-reports "Gemini
+  3.6 Flash (High)", 2026-07-24) — pick the model inside AGY itself. The standalone
+  `gemini` CLI is dead for individual subscriptions (see table above). API
+  alternative: Gemini API / Vertex AI with `GEMINI_API_KEY`.
+- **Kimi K3** — Kimi Code CLI (`kimi -m kimi-code/k3 -p <prompt>`; the prompt goes
+  **inline as one argv element** — the CLI has no stdin or file prompt mode, so
+  `orchestrate.py` caps inline delivery at 100,000 bytes and points you to the API
+  for larger targets). Or Moonshot OpenAI-compatible endpoint (base URL
+  `https://platform.moonshot.ai/v1` or the current Moonshot base), model id in the
+  `kimi-k3` family — **verify the exact API model string** (Moonshot sometimes
+  exposes `moonshot-v1`-style aliases). K3 Max, always-on max thinking.
 
 ### Non-interactive flags to confirm
-The three most common CLIs have stable headless modes (`claude -p`, `codex exec`,
-`gemini -p`). The two newest — **Grok Build** and **Kimi Code** — are recent; confirm
-their exact non-interactive/print flags against current docs, or just use their HTTP
-APIs for deterministic batch calls. `roster.yaml` has a `cmd` template per model that
-you fill in once verified.
+The two most common CLIs have stable headless modes (`claude -p`, `codex exec`).
+**AGY** headless is `agy --print '<prompt>'` — verified working 2026-07-24, but its
+`--model`/`--effort` flags break prompt delivery, so leave them off. The two newest
+— **Grok Build** and **Kimi Code** — are recent; confirm their exact
+non-interactive/print flags against current docs, or just use their HTTP APIs for
+deterministic batch calls. `roster.yaml` has a `cmd` template per model that you
+fill in once verified.
 
 ## What each model is good for here (rough priors, July 2026)
 
@@ -78,8 +89,11 @@ you fill in once verified.
   repo reasoning; good for deep multi-file code review and as organizer.
 - **Grok 4.5** — fast, cheap, strong agentic tool-use; good value worker, good for
   wide first-pass coverage.
-- **Gemini 3.1 Pro** — strong abstract reasoning and huge (1M) context; good for
-  whole-repo / long-config sweeps and threat modeling over large designs.
+- **Gemini (AGY default, currently 3.6 Flash High)** — fast and cheap; the Flash
+  tier trades some depth for speed, so lean on agreement with the stronger workers
+  for its solo findings. (If you switch AGY's default to a Pro-tier Gemini model,
+  its strengths are abstract reasoning and huge context — good for whole-repo /
+  long-config sweeps and threat modeling over large designs.)
 - **Kimi K3** — 1M context, strong coding scores; note independent evals flag higher
   verbosity and hallucination rate, so weight its solo findings toward "verify" and
   lean on agreement with other workers.

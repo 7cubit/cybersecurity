@@ -70,7 +70,7 @@ Nothing sensitive should ever end up in this repo; see the `.gitignore` and the
 | Claude Fable 5 | max | Claude Code / Anthropic API |
 | GPT-5.6 Sol | max | Codex CLI / OpenAI API |
 | Grok 4.5 | high | Grok CLI / xAI API |
-| Gemini 3.1 Pro | high | Gemini CLI / Gemini API |
+| Gemini (AGY default) | high | Antigravity (AGY) CLI / Gemini API |
 | Kimi K3 | max | Kimi CLI / Moonshot (OpenAI-compatible) API |
 
 As configured, **all seven entries run via subscription CLIs — no API keys required.**
@@ -107,11 +107,19 @@ python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # --organizer opus|terra|grok
 # --workers  fable,sol,grok,gemini,kimi   (default: all)
 # --quick    use the cheaper 3-model subset
+# --dry-run  print exactly what would be sent to which providers, then exit
+# --sarif PATH  also write findings as SARIF 2.1.0 for CI code scanning
+# --secret-scanner regex|gitleaks|trufflehog   extra redaction pass (regex is the default)
+# --max-chars N  override the default per-model input cap
+
+# piping works too — this reviews your actual diff:
+git diff main | python scripts/orchestrate.py --mode code_review --target /dev/stdin --quick
 ```
 
 It reads [`scripts/roster.yaml`](scripts/roster.yaml), fans the target out
 concurrently, merges the findings, runs the organizer's synthesis pass, and writes
-`security-review.md`.
+`security-review.md`. It can also emit SARIF for CI code scanning (`--sarif`), and
+`--dry-run` previews the whole transmit manifest before anything leaves your machine.
 
 ## 🛡️ Safety & scope
 
@@ -123,6 +131,10 @@ concurrently, merges the findings, runs the organizer's synthesis pass, and writ
 - **No secrets in the repo.** Configuration references the *names* of environment
   variables, never their values. The `.gitignore` keeps generated reports, `.env`
   files, and caches out of version control. If you fork this, keep it that way.
+- **Preview before you send.** `--dry-run` prints exactly what would be sent to which
+  providers — bytes, per-model caps, and redaction counts — before anything leaves
+  your machine. `--secret-scanner gitleaks|trufflehog` adds a second redaction pass
+  on top of the built-in regex one when those tools are installed.
 
 ## License
 

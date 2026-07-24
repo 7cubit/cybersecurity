@@ -2,11 +2,23 @@
 #
 # mode: "cli" (subscription-authenticated, cheap) or "api" (pay-per-token).
 #
-# Prompt delivery (see run_cli in orchestrate.py) is chosen by the token in `cmd`:
+# Prompt delivery (see run_cli in orchestrate.py) is chosen by the token in `cmd`,
+# and every entry runs with shell=False as an argv list (no shell interpretation):
 #   * no token        -> prompt piped on stdin        (claude -p, codex exec)
 #   * {prompt_file}   -> prompt written to a temp file, path substituted (grok --prompt-file)
-#   * {prompt}        -> prompt shell-quoted inline    (gemini -p, kimi -p)
-# For api mode the OpenAI-compatible HTTP path is used with base_url + api_key_env.
+#   * {prompt}        -> prompt inline as ONE argv element, max 100,000 bytes (kimi -p,
+#                        agy --print)
+# Inline delivery is bounded because a single argument is capped at 128 KiB on
+# Linux (MAX_ARG_STRLEN); oversize prompts raise a clear error — switch that
+# worker to api mode for large targets. For api mode the OpenAI-compatible HTTP
+# path is used with base_url (https only) + api_key_env.
+#
+# Per-model tuning (both optional, both on workers):
+#   * max_chars -> how much of the target THIS model is shown. Big-context / stdin/file
+#     models can read more; an inline (-p / --print) model must stay under ~100 KB
+#     (see above). Falls back to defaults.max_target_chars (or 180,000) when unset.
+#   * weight    -> how much this model's vote counts toward weighted agreement (a
+#     stronger model can outweigh a weaker one). Defaults to 1.0. Tune to taste.
 #
 # BRING YOUR OWN ACCESS: every cli entry authenticates against YOUR logged-in CLI;
 # every api entry uses YOUR own key from the named env var. No credentials live in
@@ -14,9 +26,12 @@
 # the ensemble degrades gracefully to whatever you actually have.
 #
 # CLI invocations below were verified against the installed CLIs on 2026-07-22
-# (claude, codex, gemini, grok, kimi). Two model strings are still worth a glance
-# for your own install: `gemini-3.1-pro` (may carry a -preview suffix) and the
-# codex `gpt-5.6-*` ids. Grok (`grok-4.5`) and Kimi (`kimi-code/k3`) are confirmed.
+# (claude, codex, grok, kimi); AGY headless delivery re-verified 2026-07-24 (the
+# standalone `gemini` CLI no longer accepts this machine's subscription login —
+# Google IneligibleTierError — so Gemini models run through the Antigravity CLI).
+# Model strings worth a glance
+# for your own install: the codex `gpt-5.6-*` ids. Grok (`grok-4.5`) and Kimi
+# (`kimi-code/k3`) are confirmed.
 
 organizers:
   opus:
@@ -38,6 +53,8 @@ workers:
     mode: cli
     model: claude-fable-5
     effort: max
+    max_chars: 200000        # stdin delivery — large context OK
+    weight: 1.1
     cmd: 'claude -p --model claude-fable-5'           # prompt on stdin
     # api fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
 
@@ -45,6 +62,8 @@ workers:
     mode: cli
     model: gpt-5.6-sol
     effort: high
+    max_chars: 200000        # stdin delivery — large context OK
+    weight: 1.2              # strong at logic/access-control flaws
     cmd: 'codex exec -m gpt-5.6-sol -c model_reasoning_effort=high'   # stdin; effort via -c
     # api fallback: mode: api, OpenAI base_url, api_key_env OPENAI_API_KEY
 
@@ -52,22 +71,34 @@ workers:
     mode: cli                # logged in via grok.com — no API key needed
     model: grok-4.5
     effort: high
+    max_chars: 200000        # temp-file delivery — no arg-size limit
+    weight: 1.0
     cmd: 'grok -m grok-4.5 --effort high --output-format plain --prompt-file {prompt_file}'
     # api fallback: mode: api, base_url https://api.x.ai/v1, api_key_env XAI_API_KEY
 
   gemini:
-    mode: cli
-    model: gemini-3.1-pro    # VERIFY exact string on your install (may be -preview)
+    mode: cli                # Antigravity (AGY) CLI — uses your Google login
+    model: agy-default       # AGY runs its default model (self-reports "Gemini 3.6 Flash
+                             # (High)", verified 2026-07-24). Do NOT add --model or --effort:
+                             # both flags make AGY's print mode drop the prompt and answer
+                             # about the setting instead (verified broken 2026-07-24).
     effort: high
-    cmd: 'gemini -m gemini-3.1-pro -p {prompt}'       # prompt inline
-    # api fallback: mode: api, Gemini/Vertex endpoint, api_key_env GEMINI_API_KEY
+    max_chars: 80000         # inline (--print) delivery — MUST stay under the 100 KB arg limit
+    weight: 1.0
+    cmd: 'agy --print {prompt}'   # inline argv element (AGY has no stdin/file prompt mode)
+    # The standalone `gemini` CLI rejects this machine's subscription login
+    # (Google IneligibleTierError: "migrate to Antigravity", 2026-07-24) — AGY is the
+    # supported path. api fallback: mode: api, Gemini/Vertex endpoint, GEMINI_API_KEY
 
   kimi:
     mode: cli                # OAuth-logged-in kimi-code CLI — no API key needed
     model: kimi-code/k3      # real alias from ~/.kimi-code/config.toml (default_model)
     effort: max
-    cmd: 'kimi -m kimi-code/k3 -p {prompt}'           # prompt inline
-    # api fallback: mode: api, base_url https://platform.moonshot.ai/v1, api_key_env MOONSHOT_API_KEY
+    max_chars: 80000         # inline (-p) delivery — MUST stay under the 100 KB arg limit
+    weight: 0.9
+    cmd: 'kimi -m kimi-code/k3 -p {prompt}'         # inline argv element (no stdin support)
+    # inline is capped at 100,000 bytes — for larger targets use the api fallback:
+    # mode: api, base_url https://platform.moonshot.ai/v1, api_key_env MOONSHOT_API_KEY
 
 defaults:
   organizer: opus
@@ -76,3 +107,5 @@ defaults:
   quick_workers: [sol, grok, gemini]
   concurrency: 5
   timeout_seconds: 600
+  max_target_chars: 180000   # default per-model cap when a worker sets no max_chars
+                             # (also overridable at runtime with --max-chars)
