@@ -1,9 +1,10 @@
 # Model roster & access reality
 
-Read this before running the skill. The models are all real and current (verified
-July 2026); the thing most likely to break your setup is not the model IDs but
-**whether a given consumer subscription can actually drive a given model headlessly,
-or whether you need a separate pay-per-token API key.** Those are different products.
+Read this before running the skill. The models are all real and current (roster
+refreshed **2026-07-27**, every invocation below smoke-tested live on that date);
+the thing most likely to break your setup is not the model IDs but **whether a given
+consumer subscription can actually drive a given model headlessly, or whether you
+need a separate pay-per-token API key.** Those are different products.
 
 > **Public-repo note — bring your own access.** This roster describes *slots*, not
 > shared credentials. Every path below authenticates against **your own** logged-in
@@ -12,91 +13,122 @@ or whether you need a separate pay-per-token API key.** Those are different prod
 > configure it to borrow someone else's. If a model isn't one you pay for, drop it
 > from the worker list — the ensemble degrades gracefully to whatever you do have.
 
-## The five subscriptions → programmatic access
+## Subscriptions → programmatic access
 
 | Provider | Plan (example) | Headless path | Subscription drives it? |
 | --- | --- | --- | --- |
-| Anthropic | Claude Max | **Claude Code** (`claude -p`) | **Yes** — the standard headless path. Note: Opus 4.8 is confirmed; whether **Fable 5** is selectable under a *Max* seat vs. requiring API access is the one Anthropic-side item to verify in your model settings. |
-| OpenAI | ChatGPT Plus | **Codex CLI** (`codex exec`), auth'd with your ChatGPT account | **Yes** — Plus grants GPT-5.6 **Sol** at medium+ effort, and the "max" reasoning toggle. Terra/Luna also available. |
-| Google | Gemini Ultra / AI Pro | **Antigravity (AGY) CLI** (`agy --print`) | **Yes** — AGY is Google's supported subscription path. The standalone **Gemini CLI no longer accepts individual subscription logins** (Google `IneligibleTierError`: "migrate to the Antigravity suite", confirmed on this machine 2026-07-24). |
-| xAI | Grok (SuperGrok / Premium+) | **Grok Build CLI** (`grok`) **or** xAI API | **Verify.** Grok Build CLI exists (`x.ai/cli`) and there's free promo usage, but confirm whether it authenticates against your *subscription* or expects an `XAI_API_KEY`. If CLI-subscription auth isn't supported, use the API (separate billing). |
-| Moonshot | Kimi plan | **Kimi Code CLI** **or** Moonshot OpenAI-compatible API | **Verify.** Kimi K3 has a CLI and an OpenAI-compatible API (`platform.moonshot.ai`). The cleanest ensemble path is the OpenAI-compatible API since it drops into any OpenAI client; confirm whether your Kimi subscription covers CLI headless use or if you want an API key. |
-
-**Bottom line for the architecture:** three of the five (Claude, Codex, Gemini) are
-the ones most orchestrators already drive as subscription-authenticated CLIs in
-headless mode. The only genuinely *new* integrations for this skill are **Grok**
-(Grok Build CLI or xAI API) and **Kimi** (Kimi Code CLI or the OpenAI-compatible API).
-Because Kimi's API is OpenAI-compatible, it slots into any OpenAI-style client with
-just a base-URL + key swap, which is the least-effort way to add it.
+| Anthropic | Claude Max | **Claude Code** (`claude -p`) | **Yes** — the standard headless path. `claude -p --model <id> --effort <level>` is verified working for `claude-opus-5` and `claude-sonnet-5`; `--effort` accepts `high`, `xhigh`, and `max` in print mode. |
+| Sakana (via Codex CLI) | — | **`codex-fugu exec`** | **Yes** — a Codex CLI build pointed at provider `sakana`, serving `fugu-ultra-v1.1`. Verified answering at `model_reasoning_effort=xhigh`. Fills the GPT slot while the OpenAI seat is unavailable. |
+| Google | Gemini Ultra / AI Pro | **Antigravity (AGY) CLI** (`agy -p`) | **Access yes, task no.** AGY drives Gemini fine, but the model **refuses security review** (see below), so the slot is disabled. The standalone Gemini CLI separately no longer accepts individual subscription logins (Google `IneligibleTierError`). |
+| xAI | Grok (SuperGrok / Premium+) | **Grok Build CLI** (`grok`) | **Yes** — `grok models` reports a live grok.com login; no `XAI_API_KEY` needed for the CLI path. `grok-4.5` is the only and default model. |
+| Moonshot | Kimi plan | **Kimi Code CLI** (`kimi -p`) | **Yes** — OAuth-logged-in CLI, no API key needed. Moonshot's OpenAI-compatible API is the fallback for oversize targets. |
+| OpenAI | ChatGPT | ~~Codex CLI (`codex exec`)~~ | **No — allowance exhausted.** GPT-5.6 Sol/Terra are out of the roster until the seat comes back. Do not route to OpenAI. |
 
 **Cost note:** an ensemble task = many leaf calls. Subscription-CLI paths are the
 cheap ones and should be preferred where they work; the API fallbacks are
-pay-per-token. Set `mode: cli` vs `mode: api` per model in `roster.yaml` accordingly,
-and consider running the full 5-worker ensemble only for high-stakes reviews, with a
-cheaper 2–3 model subset as the default.
+pay-per-token. Set `mode: cli` vs `mode: api` per model in `roster.yaml` accordingly.
+The `quick_workers` subset (`sonnet, grok, kimi`) is three different model families,
+two of them (grok.com, Moonshot) billed outside the Anthropic allowance.
+
+## Three models that are deliberately NOT here
+
+- **GPT-5.6 Sol / Terra (Codex).** The ChatGPT allowance is exhausted — the seat is
+  gone, not merely rate-limited. `fugu-ultra-v1.1` occupies that slot in the meantime.
+  When GPT access returns, re-add `sol` as a worker (`codex exec -m gpt-5.6-sol
+  -c model_reasoning_effort=high`, stdin delivery) and `terra` as an organizer.
+- **Claude Fable 5.** Anthropic's own guidance is that Fable 5's bug-finding gains
+  **exclude security-focused analysis**, and that its safety classifiers can *decline*
+  cyber-adjacent requests while returning a **successful response with no content**.
+  A worker that silently returns nothing is the single worst failure mode for an
+  agreement-weighted ensemble — it reads as "found nothing" rather than "did not run."
+  Security reviewing and finding-verification go to Opus 5 or Kimi K3 instead.
+- **Gemini, via AGY.** It **refuses this skill's core task.** Tested 2026-07-27 against
+  a 6-line SQL-injection/command-injection sample, once through the real ensemble
+  prompt and once with an explicit authorized-blue-team framing:
+  - `gemini-3.6-flash-high` → *"Sorry, I cannot fulfill your request to analyze this
+    code snippet for vulnerabilities."*
+  - `gemini-3.1-pro-high` → *"I am unable to perform vulnerability analysis or security
+    audits on specific code snippets."*
+
+  Everything else works — the same CLI, login, pinned model and inline prompt delivery
+  answer non-security prompts correctly the same day — so this is a provider policy
+  decision, not broken wiring. The entry stays in `roster.yaml` (disabled, out of
+  `defaults.workers`) so it can be re-enabled if the policy changes or if you wire the
+  Gemini/Vertex API directly. **Do not reword the prompt to work around the refusal**;
+  if you re-enable it, prove it with a real finding on a known-vulnerable sample first.
 
 ## Exact models & invocation
 
-Effort/thinking settings map to the spec: "sol max" → Sol at max effort,
-"grok4.5 max" → Grok at high effort, "gemini high" → the AGY default model at its
-high setting, "kimi 3" → K3 Max (which currently only runs at max thinking anyway),
-"fable 5 max" → Fable 5.
-
 ### Organizer options
-- **Claude Opus 4.8** — id `claude-opus-4-8`; `claude -p --model claude-opus-4-8`
-- **GPT-5.6 Terra** — Codex CLI, model `gpt-5.6-terra`; balanced, good arbiter
-- **Grok 4.5** — `grok-4.5`; Grok Build CLI or `POST https://api.x.ai/v1/responses`
+- **Claude Opus 5** *(default)* — id `claude-opus-5`;
+  `claude -p --model claude-opus-5 --effort high` (prompt on stdin)
+- **fugu-ultra-v1.1** — `codex-fugu exec --skip-git-repo-check --color never
+  -m fugu-ultra-v1.1 -c model_reasoning_effort=xhigh` (prompt on stdin).
+  `--skip-git-repo-check` is required whenever the working directory isn't a git repo.
+- **Grok 4.5** — `grok -m grok-4.5 --effort high --output-format plain
+  --prompt-file <path>`
+
+Kimi is not offered as an organizer: the synthesis prompt carries every worker's
+findings, and Kimi's CLI takes the prompt inline (capped at 100 KB), which is the
+first thing to overflow on a large review.
 
 ### Workers
-- **Claude Fable 5** — id `claude-fable-5`; via Claude Code (`--model claude-fable-5`)
-  or Anthropic API. (Verify Max-seat selectability, per table above.)
-- **GPT-5.6 Sol** — Codex CLI, model `gpt-5.6-sol`, reasoning effort `high`/max;
-  or OpenAI API.
-- **Grok 4.5** — `grok-4.5`, reasoning effort `high` (dial is low/medium/high, default
-  high); Grok Build CLI or xAI API (`/v1/responses`).
-- **Gemini (via AGY)** — Antigravity CLI: `agy --print '<prompt>'` (the prompt goes
-  **inline as one argv element** — AGY has no stdin or file prompt mode, so
-  `orchestrate.py` caps inline delivery at 100,000 bytes and points you to the API
-  for larger targets). **Do not add `--model` or `--effort`** — both flags make
-  AGY's print mode drop the prompt and answer about the setting instead (verified
-  broken 2026-07-24); the worker runs AGY's default model (self-reports "Gemini
-  3.6 Flash (High)", 2026-07-24) — pick the model inside AGY itself. The standalone
-  `gemini` CLI is dead for individual subscriptions (see table above). API
-  alternative: Gemini API / Vertex AI with `GEMINI_API_KEY`.
-- **Kimi K3** — Kimi Code CLI (`kimi -m kimi-code/k3 -p <prompt>`; the prompt goes
-  **inline as one argv element** — the CLI has no stdin or file prompt mode, so
-  `orchestrate.py` caps inline delivery at 100,000 bytes and points you to the API
-  for larger targets). Or Moonshot OpenAI-compatible endpoint (base URL
-  `https://platform.moonshot.ai/v1` or the current Moonshot base), model id in the
-  `kimi-k3` family — **verify the exact API model string** (Moonshot sometimes
-  exposes `moonshot-v1`-style aliases). K3 Max, always-on max thinking.
+- **Claude Opus 5** — `claude -p --model claude-opus-5 --effort high`; stdin, 200K cap,
+  weight 1.3. Highest-precision reviewer in the set and the preferred verifier for a
+  contested finding. `--effort xhigh` is a one-flag escalation for high-stakes runs.
+- **Claude Sonnet 5** — `claude -p --model claude-sonnet-5 --effort high`; stdin,
+  200K cap, weight 1.0. Near-Opus quality on code review at lower cost; follows the
+  finding schema very literally, which is exactly what the merge step wants.
+- **fugu-ultra-v1.1** — `codex-fugu exec --skip-git-repo-check --color never
+  -m fugu-ultra-v1.1 -c model_reasoning_effort=xhigh`; stdin, 200K cap, weight 1.1.
+  Heavy: a one-word prompt still burned ~27K tokens at `xhigh`. It prints a session
+  preamble (`provider: sakana`, token counts) around its answer — `parse_findings`
+  slices the JSON array out of surrounding prose, so that is harmless.
+- **Grok 4.5** — `grok -m grok-4.5 --effort high --output-format plain --prompt-file
+  {file}`; temp-file delivery so no arg-size limit, 200K cap, weight 1.0. Fast, wide
+  first-pass coverage; separate grok.com billing.
+- **Gemini 3.6 Flash (High)** — *disabled; refuses security review, see above.* Kept in
+  `roster.yaml` as `agy --model gemini-3.6-flash-high --print-timeout 15m -p '<prompt>'`;
+  inline argv (80K cap), weight 0.8. Mechanically it is healthy: the `--model` flag that
+  broke print mode on 2026-07-24 (the CLI answered *about* the flag instead of the
+  prompt) is fixed as of 2026-07-27, so the model can be pinned rather than left to
+  AGY's default. Don't add a separate `--effort` flag — the tier is in the model name.
+  AGY has no stdin or file prompt mode, hence the inline cap.
+- **Kimi K3 at max** — `kimi -m kimi-code/k3-max -p '<prompt>'`; inline argv (80K cap),
+  weight 0.9. **The Kimi CLI has no per-call effort flag**, so "K3 max" has to come
+  from config: `kimi-code/k3-max` is a local alias in `~/.kimi-code/config.toml` —
+  same `k3` model and 1M context as the stock `kimi-code/k3`, but with
+  `default_effort = "max"`. Copy the `[models."kimi-code/k3"]` block, rename it, set
+  `default_effort = "max"`, then run `kimi doctor` to validate. Without that alias the
+  worker fails with an unknown-model error. Setting `[thinking] effort = "max"` works
+  too but changes every Kimi session globally, which the alias avoids.
 
-### Non-interactive flags to confirm
-The two most common CLIs have stable headless modes (`claude -p`, `codex exec`).
-**AGY** headless is `agy --print '<prompt>'` — verified working 2026-07-24, but its
-`--model`/`--effort` flags break prompt delivery, so leave them off. The two newest
-— **Grok Build** and **Kimi Code** — are recent; confirm their exact
-non-interactive/print flags against current docs, or just use their HTTP APIs for
-deterministic batch calls. `roster.yaml` has a `cmd` template per model that you
-fill in once verified.
+### Prompt-delivery summary
+`claude` and `codex-fugu` read stdin (unbounded). `grok` takes `--prompt-file`
+(unbounded). `kimi` (and the disabled `agy` slot) takes the prompt as a single inline
+argument, so `orchestrate.py` caps it at 100,000 bytes and errors loudly rather than
+truncating silently — switch to `mode: api` for very large targets.
 
 ## What each model is good for here (rough priors, July 2026)
 
-- **GPT-5.6 Sol** — OpenAI explicitly markets 5.6 as its "strongest cybersecurity
-  model yet," pitched at threat modeling, code review, patching, and blue-teaming.
-  Strong default worker for code review.
-- **Claude Fable 5 / Opus 4.8** — top-tier on long-horizon agentic and SWE-Bench-style
-  repo reasoning; good for deep multi-file code review and as organizer.
-- **Grok 4.5** — fast, cheap, strong agentic tool-use; good value worker, good for
-  wide first-pass coverage.
-- **Gemini (AGY default, currently 3.6 Flash High)** — fast and cheap; the Flash
-  tier trades some depth for speed, so lean on agreement with the stronger workers
-  for its solo findings. (If you switch AGY's default to a Pro-tier Gemini model,
-  its strengths are abstract reasoning and huge context — good for whole-repo /
-  long-config sweeps and threat modeling over large designs.)
-- **Kimi K3** — 1M context, strong coding scores; note independent evals flag higher
-  verbosity and hallucination rate, so weight its solo findings toward "verify" and
-  lean on agreement with other workers.
+- **Claude Opus 5** — high precision *and* high recall on code review, strong on
+  multi-file reasoning. Best single judge of whether a finding is real; that's why it
+  carries the heaviest weight and the organizer seat.
+- **Claude Sonnet 5** — the volume worker. Literal instruction-following keeps its
+  JSON clean; near-Opus on code review at meaningfully lower cost.
+- **fugu-ultra-v1.1** — deep, slow, expensive-per-call reasoning at `xhigh`. Useful
+  as an independent non-Anthropic deep pass while the GPT slot is empty.
+- **Grok 4.5** — fast, cheap, strong agentic tool-use; good value worker for wide
+  first-pass coverage.
+- **Kimi K3 (max)** — 1M context, strong coding scores; independent evals flag higher
+  verbosity and hallucination rate, so weight its solo findings toward "verify."
+  Its value is family independence — its blind spots differ from everyone else's.
+
+**Independence caveat:** two of the five workers (Opus 5, Sonnet 5) are the same model
+family and will share some blind spots, so raw agreement count slightly overstates
+independence when both agree. Agreement *across* families — Anthropic vs. Sakana vs.
+xAI vs. Moonshot — is the stronger signal. The per-model `weight` values partly
+compensate; treat a 2/5 that is opus+sonnet as weaker than a 2/5 that is grok+kimi.
 
 These are priors, not gospel — re-verify against current benchmarks before trusting
 any one model's solo call on a critical finding. The ensemble exists precisely so no

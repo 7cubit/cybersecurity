@@ -24,8 +24,8 @@ does **not** produce exploit code, and it does **not** attack live systems.
 drives authenticates against **your own** logged-in CLI subscription or **your own**
 API key, read from an environment variable *on your machine*.
 
-- If you install this, it runs on **your** Claude / OpenAI / Google / xAI / Moonshot
-  accounts — the ones you're logged into or whose keys you've set.
+- If you install this, it runs on **your** Claude / Codex / xAI / Moonshot accounts —
+  the ones you're logged into or whose keys you've set.
 - It will **not** call, borrow, or bill anyone else's accounts, and you must not
   configure it to.
 - Don't have a subscription for one of the models? Just delete it from the worker
@@ -61,23 +61,35 @@ Nothing sensitive should ever end up in this repo; see the `.gitignore` and the
 
 ## The roster
 
-**Organizer** (one): Claude Opus 4.8 *(default)*, GPT-5.6 Terra, or Grok 4.5.
+**Organizer** (one): Claude Opus 5 *(default)*, fugu-ultra-v1.1, or Grok 4.5.
 
 **Workers** (fan out in parallel):
 
 | Worker | Effort | Driven via |
 | --- | --- | --- |
-| Claude Fable 5 | max | Claude Code / Anthropic API |
-| GPT-5.6 Sol | max | Codex CLI / OpenAI API |
+| Claude Opus 5 | high (`xhigh` to escalate) | Claude Code / Anthropic API |
+| Claude Sonnet 5 | high | Claude Code / Anthropic API |
+| fugu-ultra-v1.1 | xhigh | `codex-fugu exec` |
 | Grok 4.5 | high | Grok CLI / xAI API |
-| Gemini (AGY default) | high | Antigravity (AGY) CLI / Gemini API |
 | Kimi K3 | max | Kimi CLI / Moonshot (OpenAI-compatible) API |
 
-As configured, **all seven entries run via subscription CLIs — no API keys required.**
+As configured, **every entry runs via a subscription CLI — no API keys required.**
 Exact model strings, per-provider invocation, and which subscription can drive which
 model headlessly are documented in
 [`references/model-roster.md`](references/model-roster.md). **Read that first** —
 verifying access mode per model is the step most likely to trip you up.
+
+Three notable absences, all explained in that file: **GPT-5.6** is out while the
+OpenAI seat is unavailable (`fugu-ultra-v1.1` covers the slot); **Claude Fable 5** is
+out because its safety classifiers can decline cyber-adjacent prompts and return a
+*successful but empty* response — which an agreement-weighted ensemble would misread
+as "this model found nothing"; and **Gemini** is out because both its Flash and Pro
+tiers refuse vulnerability analysis outright (verified 2026-07-27, refusal text
+quoted in `roster.yaml`).
+
+Kimi's `max` effort needs a one-time local alias (`kimi-code/k3-max` in
+`~/.kimi-code/config.toml`) because the Kimi CLI has no per-call effort flag — the
+roster comments walk you through it.
 
 > 📖 **Full feature reference:** [`FEATURES.md`](FEATURES.md) documents every mode,
 > flag, config option, prompt-delivery method, guardrail, and extension point in
@@ -104,9 +116,9 @@ pip install pyyaml   # only dependency; everything else is stdlib
 
 python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # modes:   code_review | infra_hardening | dependency_audit | threat_model | incident_triage
-# --organizer opus|terra|grok
-# --workers  fable,sol,grok,gemini,kimi   (default: all)
-# --quick    use the cheaper 3-model subset
+# --organizer opus|fugu|grok
+# --workers  opus,sonnet,fugu,grok,kimi   (default: all)
+# --quick    cheaper 3-model subset (sonnet,grok,kimi)
 # --dry-run  print exactly what would be sent to which providers, then exit
 # --sarif PATH  also write findings as SARIF 2.1.0 for CI code scanning
 # --secret-scanner regex|gitleaks|trufflehog   extra redaction pass (regex is the default)

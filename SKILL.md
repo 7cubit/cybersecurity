@@ -56,8 +56,8 @@ your subscriptions can actually drive each one headlessly are in
 right model strings and access mode. Machine-readable form: `scripts/roster.yaml`.
 
 **Organizer / lead** (picks one; scopes the task, routes it, arbitrates
-disagreements, writes the final report). Default **Claude Opus 4.8** because Claude
-Code is the natural host process; alternatives **GPT-5.6 Terra** (Codex) or
+disagreements, writes the final report). Default **Claude Opus 5** because Claude
+Code is the natural host process; alternatives **fugu-ultra-v1.1** (`codex-fugu`) or
 **Grok 4.5** (Grok Build).
 
 **Workers / decision tier** (all of them, in parallel; each independently analyzes
@@ -65,11 +65,27 @@ the same target and returns structured findings):
 
 | Worker | Effort setting | Driven via |
 | --- | --- | --- |
-| Claude Fable 5 | max | Claude Code / Anthropic API |
-| GPT-5.6 Sol | max | Codex CLI / OpenAI API |
+| Claude Opus 5 | high (`xhigh` to escalate) | Claude Code / Anthropic API |
+| Claude Sonnet 5 | high | Claude Code / Anthropic API |
+| fugu-ultra-v1.1 | xhigh | `codex-fugu exec` |
 | Grok 4.5 | high | Grok Build CLI / xAI API |
-| Gemini (AGY default model) | high | Antigravity (AGY) CLI / Gemini API |
-| Kimi K3 (Max) | max (always-on) | Kimi Code CLI / Moonshot OpenAI-compatible API |
+| Kimi K3 | max (via the `kimi-code/k3-max` alias) | Kimi Code CLI / Moonshot OpenAI-compatible API |
+
+Three models are deliberately absent:
+
+- **GPT-5.6 (Sol/Terra)** — the ChatGPT allowance is exhausted. `fugu-ultra-v1.1`
+  holds that slot until it returns; never route to OpenAI in the meantime.
+- **Claude Fable 5** — its bug-finding gains explicitly exclude security analysis and
+  its safety classifiers can decline cyber-adjacent prompts while still returning a
+  *successful, empty* response. A silently empty worker reads as "found nothing" and
+  poisons the agreement count.
+- **Gemini (via AGY)** — verified 2026-07-27: both `gemini-3.6-flash-high` and
+  `gemini-3.1-pro-high` **refuse** vulnerability analysis of a code snippet, including
+  under an explicit authorized-blue-team framing. The wiring works; the provider
+  declines the task. Don't reword the prompt to get around it.
+
+Note that Opus 5 and Sonnet 5 share a model family: agreement *across* families is a
+stronger confidence signal than raw count.
 
 This is the same fan-out pattern as a standard ensemble harness; the roster is
 just a security-specialized instantiation of it. If you already run a multi-model
@@ -162,7 +178,7 @@ ALWAYS use this template for the consolidated output:
 
 ## Findings
 <one block per finding, ordered by severity then agreement>
-### [SEVERITY] <title>  (agreement: N/5, confidence: <level>)
+### [SEVERITY] <title>  (agreement: N/<workers run>, confidence: <level>)
 - **Where:** <location>
 - **Evidence:** <excerpt>
 - **Impact:** <conceptual impact>
@@ -184,7 +200,9 @@ To run the ensemble as a batch job (recommended for anything non-trivial):
 ```bash
 python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # other modes: infra_hardening | dependency_audit | threat_model | incident_triage
-# --organizer opus|terra|grok   --workers fable,sol,grok,gemini,kimi (default: all)
+# --organizer opus|fugu|grok
+# --workers opus,sonnet,fugu,grok,kimi (default: all)
+# --quick   cheaper subset: sonnet,grok,kimi
 ```
 
 The script reads `scripts/roster.yaml` for model IDs and access mode per model, fans

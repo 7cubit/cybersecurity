@@ -88,3 +88,80 @@ additions, not bug fixes, so they were recorded in `SECURITY_AUDIT.md`'s roadmap
 docs updated (`README.md`, `FEATURES.md`, `SKILL.md`,
 `references/model-roster.md`, `SECURITY_AUDIT.md`). No `orchestrate.py` change
 needed — `{prompt}` inline delivery and the 100 KB guard already cover AGY.
+
+## 2026-07-27 — Roster refreshed to current models; GPT slot replaced
+
+**Request:** "update it to the newest models. also gpt not available now." Then, mid-run:
+"use kimi k3 max as well, grok4.5 high as well" and "you can also use codex-fugu cli for
+fugu-ultra-v1.1 xhigh until the gpt is available. the GPT quota is got over."
+
+**Verified live against the installed CLIs (tiny real single-turn calls, 2026-07-27):**
+- `claude -p --model claude-opus-5` and `--model claude-sonnet-5` both answer;
+  `--effort` accepts `high` / `xhigh` / `max` in print mode.
+- `codex-fugu exec -m fugu-ultra-v1.1 -c model_reasoning_effort=xhigh` answers on stdin
+  (provider reports `sakana`). Requires `--skip-git-repo-check` outside a git repo, and
+  prints a session preamble around the answer (harmless — `parse_findings` slices the
+  JSON out of prose). Heavy: ~27K tokens for a one-word reply.
+- `agy --model gemini-3.6-flash-high -p '<prompt>'` **now works** — the 2026-07-24
+  print-mode `--model` bug is fixed, so the Gemini model is pinned explicitly again
+  instead of riding AGY's default. `--print-timeout 15m` accepted.
+- `grok models` confirms a live grok.com login, `grok-4.5` the only model.
+- Kimi has **no per-call effort flag**; `[thinking] effort` was `high` and
+  `[models."kimi-code/k3"]` carries `default_effort = "high"`. Added a local
+  `[models."kimi-code/k3-max"]` alias (same `k3`, 1M context, `default_effort = "max"`)
+  to `~/.kimi-code/config.toml`; `kimi doctor` validates and `kimi -m kimi-code/k3-max -p`
+  answers. Backup at `config.toml.bak-20260727`.
+
+**Done:** `roster.yaml` organizers → `opus` (claude-opus-5, default) · `fugu`
+(fugu-ultra-v1.1) · `grok`. Workers → `opus` 1.3 · `fugu` 1.1 · `sonnet` 1.0 ·
+`grok` 1.0 · `kimi` 0.9. `quick_workers` → `sonnet,grok,kimi`. `timeout_seconds`
+600 → 900 (max-effort workers were at risk of being cut off). Docs updated:
+`SKILL.md`, `README.md`, `FEATURES.md`, `references/model-roster.md`. No
+`orchestrate.py` change needed — it is fully roster-driven; the 49-test suite
+still passes.
+
+**End-to-end verification (real models, not stubs):** ran the full ensemble against a
+6-line file with a deliberate SQL injection and a `shell=True` command injection.
+Result: `5/6 workers contributed`, 12 merged findings, both injections flagged
+**critical at 5/5 agreement**, report written `0600`. Opus 5 returned 5 findings,
+Kimi 3, Sonnet/Grok/fugu 2 each. The organizer's synthesis correctly merged the
+duplicate injection pairs and folded "argument injection" into the command-injection
+fix. The pipeline is confirmed working, not just parseable.
+
+**Judgment call 0 — Gemini removed after it refused the job.** The one worker that
+dropped out of that run was Gemini: it returned prose, not findings, and
+`parse_findings` correctly excluded it rather than scoring it as "0 findings" (the
+2026-07-24 guard doing exactly its job). Reproduced directly — `gemini-3.6-flash-high`
+answered *"Sorry, I cannot fulfill your request to analyze this code snippet for
+vulnerabilities"*, and `gemini-3.1-pro-high`, given an explicit authorized-blue-team
+framing, answered *"I am unable to perform vulnerability analysis or security audits on
+specific code snippets."* Non-security prompts through the same CLI answer fine, so it
+is provider policy, not wiring. Removed from `defaults.workers`, entry kept in
+`roster.yaml` with the refusal text quoted. **Deliberately did not attempt to reword
+the prompt around a safety refusal** — that's the provider's call to make, and a worker
+coaxed past its own policy is not one whose findings should carry weight in an
+agreement score.
+
+**Judgment call 1 — GPT dropped, not stubbed.** The ChatGPT allowance is exhausted
+(the seat is gone, not throttled), so `sol`/`terra` are removed rather than left in to
+fail at runtime. `fugu-ultra-v1.1` holds the slot. `FEATURES.md` §14 documents the exact
+entries to restore when GPT access returns.
+
+**Judgment call 2 — Claude Fable 5 removed from the worker tier.** Not a cost decision:
+Anthropic's guidance is that Fable 5's bug-finding gains exclude security analysis, and
+its safety classifiers can decline cyber-adjacent prompts while returning a *successful,
+empty* response. `parse_findings` would read that as a legitimate "0 findings" rather
+than a failed worker, quietly skewing the agreement score in the safest-looking
+direction. Opus 5 and Kimi K3 take the reviewing/verification role instead.
+
+**Judgment call 3 — two same-family workers.** `opus` + `sonnet` are both Anthropic and
+share blind spots, so raw agreement count slightly overstates independence when only
+those two agree. Documented in all three docs rather than papered over; the `weight`
+values partly compensate, and `quick_workers` was deliberately built from three
+*different* families (xAI / Google / Moonshot).
+
+**Judgment call 4 — the Kimi alias edits a file outside this repo.** Pinning K3 to max
+required a change to `~/.kimi-code/config.toml`. Adding a new alias rather than setting
+`[thinking] effort = "max"` keeps every other Kimi session on its existing default; the
+roster comments and `references/model-roster.md` tell a fresh installer to add the same
+alias, since the repo cannot ship it for them.
