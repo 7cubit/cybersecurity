@@ -165,3 +165,255 @@ required a change to `~/.kimi-code/config.toml`. Adding a new alias rather than 
 `[thinking] effort = "max"` keeps every other Kimi session on its existing default; the
 roster comments and `references/model-roster.md` tell a fresh installer to add the same
 alias, since the repo cannot ship it for them.
+
+---
+
+## 2026-07-31 — GPT seat restored; the fugu stand-in removed from the machine
+
+**Request:** "can you please add the codex in this skill now. the token is availalble
+now." Then, mid-run: "remove the codex-fugu."
+
+**Verified live before changing anything** (facts, not assumptions):
+- `codex` v0.144.6 at `~/.local/bin/codex`; `codex login status` → `Logged in using
+  ChatGPT`. A real `codex exec` round-trip answered. The allowance is genuinely back.
+- Default model `gpt-5.6-sol` (also available: `gpt-5.5`), config default effort `high`.
+- Prompt delivery is **stdin**, same as the old fugu entry — so the roster's delivery
+  convention needed no change, only the command string.
+- `codex exec review --base/--uncommitted/--commit` exists: a purpose-built
+  non-interactive diff reviewer. Noted in the orchestrator docs; not wired into this
+  ensemble, which fans a prepared target out to workers rather than reading a diff.
+
+**Done:** `roster.yaml` key `fugu` → `codex` in both `organizers` and `workers`;
+model `fugu-ultra-v1.1` → `gpt-5.6-sol`; weight 1.1 → 1.2; `defaults.workers` →
+`[opus, sonnet, codex, grok, kimi]`. `quick_workers` unchanged. No `orchestrate.py`
+change needed — it stayed fully roster-driven. `--dry-run` confirms the five-worker
+ensemble resolves and shows `codex  gpt-5.6-sol [cli]  cap=200,000  weight=1.2`.
+
+**Judgment call 1 — `-s read-only` added, which the fugu entry never had.** Codex's
+default approval mode is `on-request`: it stops and waits for a human, which would hang
+a worker inside a parallel fan-out with no visible error. `read-only` also enforces the
+property this tier should have anyway — a review worker must never write to the target.
+This is a genuine behavioural difference from the old `codex-fugu` invocation, not a
+cosmetic flag, so it is called out in the roster comments too.
+
+**Judgment call 2 — effort is `-c model_reasoning_effort=`, and it fails silently.**
+The Codex CLI has no `--effort` flag, and it **accepts a misspelled effort value without
+erroring** — verified by passing a garbage value and watching the run proceed with it.
+A typo here degrades every finding in a review with no signal at all, so the warning is
+recorded in the roster comments, `FEATURES.md`, and the global orchestrator docs rather
+than left as tribal knowledge.
+
+**Judgment call 3 — fixed this skill even though the request named a different one.**
+The ask was to update the orchestrator skill and delete `codex-fugu`. Deleting that
+binary silently broke *this* skill, which had `codex-fugu` wired into one organizer slot
+and one of five default workers — it would have failed at spawn on the next security
+review. Repairing it was finishing the requested change, not scope creep. The seat the
+fugu stand-in was holding was the GPT seat all along (`FEATURES.md` §14 said so), so the
+repair and the request are the same substitution.
+
+**Judgment call 4 — deleted the Sakana credential rather than parking it.** Removal was
+total and confirmed by the user: the `codex-fugu` binary, `~/.codex/fugu.config.toml`,
+`~/.codex/fugu.json`, `~/.codex/.fugu/`, the 232 MB `~/.fugu/` checkout, the
+`[model_providers.sakana]` block in `~/.codex/config.toml`, and `SAKANA_API_KEY` from
+`~/.codex/.env`. A live key for a provider no longer in any roster is a standing
+liability with no benefit. Everything is restorable — the repo is public
+(`github.com/SakanaAI/fugu`, installed ref `e675c629`) and the config/env/launcher were
+backed up before deletion — but a new key would have to be issued, which is correct.
+
+**Judgment call 5 — kept a config block that was sitting inside fugu's markers.** The
+fugu installer's `# >>> fugu >>> … # <<< fugu <<<` region in `~/.codex/config.toml` had
+absorbed a `[shell_environment_policy.set]` section carrying Codex's own browser backend
+and `node_repl` trusted-path settings. Deleting the marked region wholesale — the
+obvious move — would have taken unrelated working Codex functionality with it. Only
+`[model_providers.sakana]` and the markers were removed; the env block was kept, and
+`codex exec` was re-run afterwards to confirm the edit broke nothing.
+
+**Not done, deliberately:** the `terra` organizer variant mentioned in `FEATURES.md` §14
+as a future restore was *not* added — only `gpt-5.6-sol` is confirmed present on this
+login, and there is no point rostering a model id that has not answered a live prompt.
+The skill's 49-test suite could not be run: `pytest` is not installed on any Python on
+this machine, which is a pre-existing condition unrelated to this change. Validation was
+done instead through the skill's own roster loader and `--dry-run` path.
+
+---
+
+## 2026-08-16 — model refresh: Grok 4.6, Gemini restored, and a dead Kimi seat
+
+**Request:** update the `/cybersecurity` skill to the newest models, and list every model
+the skill uses.
+
+Read as: bump every seat to whatever its CLI actually serves today, and report the
+roster back. Verified live rather than from memory — each seat had to answer a real
+single-turn prompt on the exact id being pinned before it went into the roster.
+
+### What moved
+
+- **`grok-4.5` → `grok-4.6`.** `grok models` now reports 4.6 as the default with 4.5
+  retained as a fallback. Confirmed live: `grok -m grok-4.6 ...` answers on its own id.
+- **`gemini-3.6-flash-high` → `gemini-3.7-flash-high`, slot RE-ENABLED** — see below.
+- **`kimi` was dead and is now fixed** — see below.
+- **No change to `claude-opus-5`, `claude-sonnet-5`, `gpt-5.6-sol`.** All three
+  re-confirmed live; all three are still the newest ids their CLIs serve. `gpt-5.6-sol`
+  is still priority-1 in Codex's own model catalog.
+- `defaults.workers` 5 → 6, `concurrency` 5 → 6.
+
+### Finding 1 — the `kimi` worker had been failing at spawn on every run
+
+`kimi -m kimi-code/k3-max` errors with *"Model "kimi-code/k3-max" is not configured in
+config.toml"*. The alias is local-only, and **a Kimi CLI upgrade (found on v0.36.0)
+rewrote `~/.kimi-code/config.toml` from its own model catalog and dropped it.** Window
+is 2026-08-01 → 2026-08-16 (the 08-01 backup still has no alias either, so the last
+known-good state predates every surviving backup).
+
+The reason nobody noticed is the interesting part, and it is a *correct* behaviour
+misreading as health: `orchestrate.py` excludes a worker that returns no parseable
+findings rather than counting it as zero. So the failure mode was not a crash — it was a
+quietly **four**-worker ensemble (the roster was five at the time) with weaker agreement
+counts, in a tool whose entire value proposition is cross-family agreement. Fixed by
+re-adding the alias (backup at `config.toml.bak-20260816`), validated with `kimi
+doctor`, live-tested.
+
+**Judgment call — edited the user's `~/.kimi-code/config.toml`.** Outside the skill
+directory, but the skill's own docs already specify this alias as a hard prerequisite;
+restoring it is repairing the documented setup, not a new preference. Backed up first.
+A one-line pre-flight (`kimi -m kimi-code/k3-max -p "ok"`) is now documented in
+`README.md`, `SKILL.md`, `FEATURES.md` §6.1 and the roster comments, because this will
+recur on the next CLI upgrade.
+
+### Finding 2 — Gemini's security-review refusal has lifted (Flash tier only)
+
+The slot was disabled on 2026-07-27 because both tiers declined vulnerability analysis.
+Retested with **this skill's actual worker prompt** — secure-code-review mode plus the
+full eight-field findings schema, against a sample seeded with a hardcoded API key, a
+concatenated SQL query and an `os.system()` command injection — not a softball:
+
+- `gemini-3.7-flash-high` → returned **all three findings** as clean, un-fenced,
+  schema-conformant JSON with correct severities. Re-enabled at weight 0.8.
+- `gemini-3.1-pro-high` → **still refuses**, same text as July. Stays out; the Flash
+  fix did not extend to Pro, and the roster now says so explicitly so nobody promotes it.
+
+**Judgment call — re-enabling is defensible now in a way it was not in July.** The
+original objection was structural, not about the model: a classifier refusal returns a
+*successful* response with no findings, which an agreement-weighted ensemble would score
+as "found nothing" instead of "did not run". That hole is closed (same mechanism that
+hid the Kimi failure above), so a future re-refusal degrades loudly instead of silently
+weakening the report. The standing rule is unchanged and restated in every doc: if a
+refusal returns, **drop the slot — do not reword the prompt around it.**
+
+### Judgment call — left `quick_workers` alone
+
+With Gemini restored, `[grok, kimi, gemini]` would have been three families *all* billed
+outside the Anthropic allowance — a strictly cheaper quick tier. Did not take it: Sonnet
+is the most schema-literal worker in the pool and the merge step depends on clean JSON,
+so trading it for a Flash-tier model to save allowance is a quality regression the user
+did not ask for. Left as `[sonnet, grok, kimi]` with the swap documented as a one-line
+option in the roster.
+
+### Not done, deliberately
+
+- **Did not escalate the `codex` seat past `xhigh`.** The Codex CLI has since added
+  `max` and `ultra`. `ultra` enables *automatic task delegation*, which is wrong for a
+  bounded single-shot worker; `max` is a pure cost/latency increase on a seat that
+  already burns ~20K tokens on a trivial prompt. Both are documented as available
+  levers instead, with `ultra` flagged as the wrong one.
+- **Did not raise Gemini's weight above 0.8.** Newly restored seat with no track record
+  here, and a Flash-tier model is a breadth worker — reliable on the obvious classes,
+  weak on subtle multi-file logic. Raise it once it has earned it.
+
+### Validation
+
+49/49 unit tests pass (`python3 -m unittest test_orchestrate` — note `pytest` is still
+not installed on this machine, the pre-existing condition logged on 2026-07-31).
+Roster loader and `--dry-run` both resolve all six seats. A full live six-worker
+end-to-end run was executed against the seeded sample to prove every seat contributes.
+
+### Follow-up finding from the validation run — the mechanical merge barely merges
+
+The live six-worker run was clean end to end: `6/6 workers contributed usable findings`,
+and the organizer's report is high quality — it correctly resolved two severity splits
+and *overturned* three overstated worker claims (stacked-query writes through
+`sqlite3.execute`, a brute-forceable Werkzeug debugger PIN, and pickle-backed Flask
+sessions enabling RCE). That is the ensemble working exactly as designed.
+
+But the run also exposed something worth recording: **`merge()` deduplicated 55 raw
+findings into 52 "unique" ones — only three merges across six models that had all found
+the same four criticals.** The cause is `_key()`, which is an exact string match on
+`category|location` after whitespace-stripping and lowercasing. Six models write those
+fields differently — `command-injection` vs `os-command-injection`, `app.py:15` vs
+`app.py:16` vs `ping()` vs `/ping route` — so near-identical findings almost never
+collide.
+
+The practical consequence is that **`agreement_count` and `agreement_weight` are
+largely inert as computed**, which matters because the per-model `weight` values are
+documented (FEATURES.md §11, `roster.yaml`) as a core confidence mechanism.
+
+**Correction to a claim made in the first draft of this entry.** It said the organizer
+re-derives agreement "by reading all six worker outputs," and that the mechanical
+numbers therefore only matter on `--skip-recon` runs. Both halves were wrong, and the
+pre-ship review (Grok 4.6, failure-modes lens) caught it against the source:
+
+- `organizer_synthesis()` is handed `json.dumps(merged)` — the **already-keyed merge
+  output**, not the raw worker payloads. Opus 5 never sees the six original responses.
+- `--skip-recon` skips **Phase 1 only**. Phase 4 runs regardless.
+
+What actually happens is narrower, but still explains the good report: `merge()` keeps
+each fragment's `agreement` list of *worker names*, so the organizer receives six
+near-duplicate rows tagged `["opus"]`, `["grok"]`, and so on, and unions them itself.
+That is how the shipped report reached `agreement: 6` on the four criticals. The
+recovery is real but incidental — it depends on the organizer noticing the duplication,
+it is not a designed backstop, and **it does not cover the two paths that consume
+`merge()` output directly**: the SARIF export and `_fallback_report()` (used when the
+organizer call fails). Those inherit the fragmentation unmitigated, which makes the
+deferred fix below more valuable than the first draft implied.
+
+**Deferred, not fixed — see `dnm-def.md`.** The request was a model refresh; rewriting
+the dedup heuristic is a separate change with its own failure modes (over-merging two
+genuinely distinct findings that share a file is worse than under-merging), and it
+should be designed and tested on its own rather than smuggled into a version bump.
+Nothing about it is newly broken by today's change — it predates it, and the six-worker
+roster makes it slightly more visible, not worse.
+
+### Pre-ship review — what two independent reviewers caught
+
+The change was reviewed before commit by two model families on deliberately different
+lenses. Both found real defects; neither review was a rubber stamp.
+
+**Grok 4.6 (failure-modes lens) — four confirmed, all fixed:**
+
+1. **The merge-deferral rationale above was factually wrong.** Corrected in place; see the
+   "Correction" block. This is the one that mattered: it was a wrong claim about how the
+   tool works, heading for a public repo.
+2. **Stale leftovers contradicting the 5→6 change.** `FEATURES.md` still described the
+   `agy`/Gemini slot as *disabled* in its prompt-delivery table, still said only `kimi`
+   used inline delivery, still advertised "up to 5 workers" and a "Full 5-model review"
+   example; `README.md` and `SKILL.md` both listed a five-worker `--workers` example. All
+   corrected. The §6 tables were already right — the drift was in the sections further
+   down, which is exactly where a table-only edit misses.
+3. **`qa.md` and `model-roster.md` disagreed on the Kimi blast radius** — "five-worker"
+   vs "four-worker". Four is right (the roster was five; Kimi was the dead one). Fixed.
+4. **Gemini's re-enablement was proven on one mode out of five.** Fair hit — see below.
+
+**Codex / GPT-5.6 Sol (diff review) — one confirmed, deferred with documentation:**
+
+- **Character caps vs byte limits on inline workers.** `_cap()` truncates by characters,
+  `run_cli()` rejects by UTF-8 bytes, so a multibyte target can drop an inline worker.
+  Real, pre-existing, and made twice as likely by restoring the second inline seat.
+  Logged in `dnm-def.md` with a workaround rather than patched blind. Note the first
+  Codex invocation failed on a CLI argument conflict (`codex exec review --uncommitted`
+  rejects a positional PROMPT) — that was rerun, not counted as a clean review.
+
+**Response to Grok's mode-coverage hit — tested rather than argued.** `gemini-3.7-flash-high`
+was then run against the real `threat_model` prompt (STRIDE walk of a JWT API) and the
+real `incident_triage` prompt (an `auth.log` excerpt with a brute force, a successful
+login, and a new listener). Both complied with correct schema. Coverage is now **3 of 5
+modes**, and `infra_hardening` / `dependency_audit` are documented as untested inferences
+rather than quietly implied to be covered.
+
+**Judgment call — deferred the byte-cap fix instead of patching it.** The standing
+instruction for this pipeline is "fix what is broken," and this was a genuine finding. It
+was still deferred, for the same reason as the merge bug: the entire change is roster +
+documentation, `orchestrate.py` was deliberately not touched, and the 49-test suite is
+green precisely because no code moved. Editing a security tool's input-handling path as
+an unreviewed drive-by at the end of a version bump trades a loud, documented, pre-existing
+limitation for an untested code change. The limitation is now written into `roster.yaml`
+next to the two affected seats, with a workaround, which is the honest version.

@@ -57,35 +57,41 @@ right model strings and access mode. Machine-readable form: `scripts/roster.yaml
 
 **Organizer / lead** (picks one; scopes the task, routes it, arbitrates
 disagreements, writes the final report). Default **Claude Opus 5** because Claude
-Code is the natural host process; alternatives **fugu-ultra-v1.1** (`codex-fugu`) or
-**Grok 4.5** (Grok Build).
+Code is the natural host process; alternatives **GPT-5.6 Sol** (`codex exec`) or
+**Grok 4.6** (Grok Build).
 
 **Workers / decision tier** (all of them, in parallel; each independently analyzes
-the same target and returns structured findings):
+the same target and returns structured findings). Roster verified live 2026-08-16:
 
-| Worker | Effort setting | Driven via |
-| --- | --- | --- |
-| Claude Opus 5 | high (`xhigh` to escalate) | Claude Code / Anthropic API |
-| Claude Sonnet 5 | high | Claude Code / Anthropic API |
-| fugu-ultra-v1.1 | xhigh | `codex-fugu exec` |
-| Grok 4.5 | high | Grok Build CLI / xAI API |
-| Kimi K3 | max (via the `kimi-code/k3-max` alias) | Kimi Code CLI / Moonshot OpenAI-compatible API |
+| Worker | Model id | Effort setting | Weight | Driven via |
+| --- | --- | --- | --- | --- |
+| Claude Opus 5 | `claude-opus-5` | high (`xhigh` to escalate) | 1.3 | Claude Code / Anthropic API |
+| Claude Sonnet 5 | `claude-sonnet-5` | high | 1.0 | Claude Code / Anthropic API |
+| GPT-5.6 Sol | `gpt-5.6-sol` | xhigh | 1.2 | `codex exec` (ChatGPT subscription) |
+| Grok 4.6 | `grok-4.6` | high | 1.0 | Grok Build CLI / xAI API |
+| Kimi K3 | `kimi-code/k3-max` | max (via the local alias) | 0.9 | Kimi Code CLI / Moonshot OpenAI-compatible API |
+| Gemini 3.7 Flash | `gemini-3.7-flash-high` | high (in the model name) | 0.8 | Antigravity (AGY) CLI / Gemini API |
 
-Three models are deliberately absent:
+Five model families — Anthropic, OpenAI, xAI, Moonshot, Google. Opus 5 and Sonnet 5
+share a family, so agreement *across* families is a stronger confidence signal than
+raw count.
 
-- **GPT-5.6 (Sol/Terra)** — the ChatGPT allowance is exhausted. `fugu-ultra-v1.1`
-  holds that slot until it returns; never route to OpenAI in the meantime.
+Deliberately absent:
+
 - **Claude Fable 5** — its bug-finding gains explicitly exclude security analysis and
   its safety classifiers can decline cyber-adjacent prompts while still returning a
   *successful, empty* response. A silently empty worker reads as "found nothing" and
   poisons the agreement count.
-- **Gemini (via AGY)** — verified 2026-07-27: both `gemini-3.6-flash-high` and
-  `gemini-3.1-pro-high` **refuse** vulnerability analysis of a code snippet, including
-  under an explicit authorized-blue-team framing. The wiring works; the provider
-  declines the task. Don't reword the prompt to get around it.
+- **Gemini 3.1 Pro** — retested 2026-08-16 and it still refuses vulnerability analysis
+  of a code snippet. Only the Flash tier complies. Don't reword the prompt to get
+  around a refusal; drop the slot instead.
 
-Note that Opus 5 and Sonnet 5 share a model family: agreement *across* families is a
-stronger confidence signal than raw count.
+**Two pre-flight checks before a big run** (both were real breakages, not theory):
+
+1. `kimi -m kimi-code/k3-max -p "ok"` — the `k3-max` alias is local-only and **Kimi CLI
+   upgrades delete it**, which silently drops this skill to a five-worker ensemble.
+2. Gemini's compliance is provider policy and can flip back. If its worker starts
+   returning no parseable findings, remove it rather than reworking the prompt.
 
 This is the same fan-out pattern as a standard ensemble harness; the roster is
 just a security-specialized instantiation of it. If you already run a multi-model
@@ -200,8 +206,8 @@ To run the ensemble as a batch job (recommended for anything non-trivial):
 ```bash
 python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # other modes: infra_hardening | dependency_audit | threat_model | incident_triage
-# --organizer opus|fugu|grok
-# --workers opus,sonnet,fugu,grok,kimi (default: all)
+# --organizer opus|codex|grok
+# --workers opus,sonnet,codex,grok,kimi,gemini (default: all)
 # --quick   cheaper subset: sonnet,grok,kimi
 ```
 

@@ -46,7 +46,7 @@ doctor reconciles their opinions into one diagnosis.
 | # | Feature | What it gives you |
 |---|---------|-------------------|
 | 1 | **5 review modes** | code review · infra hardening · dependency audit · threat model · incident triage |
-| 2 | **Multi-model fan-out** | up to 5 workers analyze the same target in parallel |
+| 2 | **Multi-model fan-out** | up to 6 workers, across 5 model families, analyze the same target in parallel |
 | 3 | **Organizer arbitration** | a lead model scopes, reconciles, and writes the final call |
 | 4 | **Weighted agreement scoring** | every finding tagged with how many models raised it (`agreement_count`) and their summed strength (`agreement_weight`); results sort by severity → weighted agreement → count |
 | 5 | **Severity reconciliation** | conflicting severities resolved toward the better-justified rating |
@@ -137,79 +137,120 @@ response only.
 
 ---
 
-## 6. The model roster (refreshed & smoke-tested 2026-07-27)
+## 6. The model roster (refreshed and live-verified 2026-08-16)
 
 **Organizer** — pick one (default **Opus 5**):
 
 | Key | Model | Driven via |
 |-----|-------|------------|
 | `opus` | Claude Opus 5 | `claude -p --model claude-opus-5 --effort high` (stdin) |
-| `fugu` | fugu-ultra-v1.1 | `codex-fugu exec` (stdin) |
-| `grok` | Grok 4.5 | `grok --prompt-file` |
+| `codex` | GPT-5.6 Sol | `codex exec -s read-only -m gpt-5.6-sol -c model_reasoning_effort=xhigh` (stdin) |
+| `grok` | Grok 4.6 | `grok --prompt-file` |
 
-**Workers** — fan out in parallel (default: all five):
+**Workers** — fan out in parallel (default: all six):
 
-| Key | Model | Effort | Driven via | Prompt delivery |
-|-----|-------|--------|------------|-----------------|
-| `opus` | Claude Opus 5 | high | `claude -p --model claude-opus-5 --effort high` | stdin |
-| `sonnet` | Claude Sonnet 5 | high | `claude -p --model claude-sonnet-5 --effort high` | stdin |
-| `fugu` | fugu-ultra-v1.1 | xhigh | `codex-fugu exec -m fugu-ultra-v1.1 -c model_reasoning_effort=xhigh` | stdin |
-| `grok` | Grok 4.5 | high | `grok -m grok-4.5 --effort high` | `--prompt-file` |
-| `kimi` | Kimi K3 | max | `kimi -m kimi-code/k3-max -p` | inline argv, capped at 100,000 bytes |
+| Key | Model | Effort | Weight | Driven via | Prompt delivery |
+|-----|-------|--------|--------|------------|-----------------|
+| `opus` | Claude Opus 5 | high | 1.3 | `claude -p --model claude-opus-5 --effort high` | stdin |
+| `sonnet` | Claude Sonnet 5 | high | 1.0 | `claude -p --model claude-sonnet-5 --effort high` | stdin |
+| `codex` | GPT-5.6 Sol | xhigh | 1.2 | `codex exec -s read-only -m gpt-5.6-sol -c model_reasoning_effort=xhigh` | stdin |
+| `grok` | Grok 4.6 | high | 1.0 | `grok -m grok-4.6 --effort high` | `--prompt-file` |
+| `kimi` | Kimi K3 | max | 0.9 | `kimi -m kimi-code/k3-max -p` | inline argv, capped at 100,000 bytes |
+| `gemini` | Gemini 3.7 Flash (High) | high | 0.8 | `agy --model gemini-3.7-flash-high -p` | inline argv, capped at 100,000 bytes |
 
-**`kimi` uses inline delivery** — its CLI has no stdin or file prompt mode. The other
-four workers deliver by stdin or temp file and are unbounded by the arg-size limit.
-(A disabled `gemini` entry remains in `roster.yaml` for reference; it also used inline
-delivery, via the Antigravity CLI.) Each worker takes two optional per-model keys:
-`max_chars` (how much of the target it's shown — the four stdin/file workers are set to
-200,000, `kimi` to 80,000 to stay under the inline cap) and `weight` (how much its vote
-counts toward weighted agreement — `opus` 1.3, `fugu` 1.1, `sonnet`/`grok` 1.0,
-`kimi` 0.9). See §11.
+**`kimi` and `gemini` use inline delivery** — neither CLI has a stdin or file prompt
+mode. The other four deliver by stdin or temp file and are unbounded by the arg-size
+limit. Each worker takes two optional per-model keys: `max_chars` (how much of the
+target it's shown — the four stdin/file workers are set to 200,000, `kimi` and `gemini`
+to 80,000 to stay under the inline cap) and `weight` (how much its vote counts toward
+weighted agreement — `opus` 1.3, `codex` 1.2, `sonnet`/`grok` 1.0, `kimi` 0.9,
+`gemini` 0.8). See §11.
 
-All eight active entries run in **`cli` mode** — i.e. through a
-subscription-authenticated CLI — so **no API keys are required**. Full per-provider
-detail, access notes, and what each model is individually good at live in
+Every active entry runs in **`cli` mode** — i.e. through a subscription-authenticated
+CLI — so **no API keys are required**. Full per-provider detail, access notes, and what
+each model is individually good at live in
 [`references/model-roster.md`](references/model-roster.md).
 
-### Three deliberate absences
-- **GPT-5.6 Sol / Terra (Codex)** — the ChatGPT allowance is exhausted, so the OpenAI
-  seat is unavailable, not merely throttled. `fugu-ultra-v1.1` (a Codex CLI build
-  installed as `codex-fugu`, provider `sakana`) fills the slot until it returns.
+### What changed on 2026-08-16
+- **Grok 4.5 → 4.6.** `grok models` now lists 4.6 as the default with 4.5 retained as a
+  fallback; 4.6 confirmed live on its own id.
+- **Gemini 3.6 → 3.7 Flash, and the slot is back in `defaults.workers`.** The refusal
+  documented below has lifted on the Flash tier — see the next subsection.
+- **The `kimi` worker was silently broken and is now fixed.** See §6.1.
+- **Anthropic and OpenAI seats did not move** — `claude-opus-5`, `claude-sonnet-5` and
+  `gpt-5.6-sol` are still the newest ids on their CLIs, all three re-confirmed live.
+
+### 6.1 The `kimi` seat was dead for two weeks — check it before a big run
+Between 2026-08-01 and 2026-08-16 a Kimi CLI upgrade (found on v0.36.0) **rewrote
+`~/.kimi-code/config.toml` from its own model catalog and dropped the local
+`kimi-code/k3-max` alias.** Every run since then had this worker failing at spawn with
+`error: failed to run prompt: Model "kimi-code/k3-max" is not configured in
+config.toml`. Because `orchestrate.py` correctly *excludes* a worker that returns no
+parseable findings rather than counting it as zero, the symptom was not a crash — it
+was a quietly smaller ensemble and weaker agreement counts. Pre-flight in one line:
+
+```
+kimi -m kimi-code/k3-max -p "ok"
+```
+
+If that errors, re-add the `[models."kimi-code/k3-max"]` block (copy
+`[models."kimi-code/k3"]`, rename, set `default_effort = "max"`) and run `kimi doctor`.
+The always-works fallback is plain `kimi-code/k3`, which runs at `high`, not `max`.
+
+### Gemini: refused before, complies now
+The Gemini slot was disabled on 2026-07-27 because the model declined this skill's core
+task. **Retested 2026-08-16 with the real worker prompts**, across three of the five
+modes — `code_review` (a sample seeded with a hardcoded API key, a string-concatenated
+SQL query and an `os.system()` command injection: found all three), `threat_model` (a
+STRIDE walk of a JWT API), and `incident_triage` (an `auth.log` excerpt showing a brute
+force, a successful login and a new listener). All three returned clean,
+schema-conformant JSON. **`infra_hardening` and `dependency_audit` were not retested** —
+lower risk than `incident_triage`, which passed, but that is an inference rather than a
+measurement, so prove them before relying on this seat in those modes.
+
+The original objection was structural rather than about the model: a classifier refusal
+returns a *successful* response with no findings, which an agreement-weighted ensemble
+would score as "found nothing" instead of "did not run". `orchestrate.py` closes that
+hole (§ worker-failure handling), so a future re-refusal degrades loudly. If one does
+return, **drop the slot — do not reword the prompt to slip past it.**
+
+### Deliberate absences
 - **Claude Fable 5** — its bug-finding gains explicitly exclude security analysis, and
   its safety classifiers can decline cyber-adjacent prompts while returning a
   *successful but empty* response. In an agreement-weighted ensemble that reads as
   "found nothing" rather than "did not run," which is the worst possible failure mode.
   Opus 5 and Kimi K3 do the verification work instead.
-- **Gemini (via AGY)** — **refuses this skill's core task.** Verified 2026-07-27 on a
-  6-line SQL-injection/command-injection sample, once through the real ensemble prompt
-  and once with an explicit authorized-blue-team framing: `gemini-3.6-flash-high`
-  replied *"Sorry, I cannot fulfill your request to analyze this code snippet for
-  vulnerabilities"* and `gemini-3.1-pro-high` replied *"I am unable to perform
-  vulnerability analysis or security audits on specific code snippets."* The CLI,
-  login, model pinning, and prompt delivery all work — this is a provider policy
-  decision. The entry stays in `roster.yaml`, out of `defaults.workers`. Don't reword
-  the prompt to slip past it.
+- **Gemini 3.1 Pro** — retested 2026-08-16 and it **still refuses**: *"Sorry, I cannot
+  fulfill your request to analyze the provided code snippet for vulnerabilities."* The
+  Flash tier's fix did not extend to Pro; don't promote it into a worker slot.
 
 ### Model-string notes
-- `claude-opus-5` / `claude-sonnet-5` — both confirmed live via `claude -p --model`.
-  `--effort` accepts `high`, `xhigh`, and `max` in print mode.
-- `fugu-ultra-v1.1` — confirmed via `codex-fugu exec`. Needs `--skip-git-repo-check`
-  when the working directory isn't a git repo, and prints a session preamble around
-  its answer (harmless — `parse_findings` slices the JSON out of surrounding prose).
-- `grok-4.5` — confirmed as the only/default model on the logged-in Grok CLI.
-- `gemini-3.6-flash-high` — confirmed selectable via `agy --model … -p` (the
-  2026-07-24 print-mode `--model` bug is fixed), but the model refuses security work,
-  so the slot is disabled. Non-security prompts answer fine.
+- `claude-opus-5` / `claude-sonnet-5` — both re-confirmed live via `claude -p --model`
+  on 2026-08-16. `--effort` accepts `low`, `medium`, `high`, `xhigh`, and `max`.
+- `gpt-5.6-sol` — re-confirmed live via `codex exec` on the ChatGPT subscription, and
+  still the top-priority frontier model in the CLI's own catalog. Needs
+  `--skip-git-repo-check` when the working directory isn't a git repo, and
+  `-s read-only` to stop the CLI's default `on-request` approval mode from blocking on
+  a human prompt. Prints a session preamble around its answer (harmless —
+  `parse_findings` slices the JSON out of surrounding prose). The CLI has since added
+  `max` and `ultra` above `xhigh`; **`ultra` enables automatic task delegation**, which
+  is wrong for a bounded single-shot worker, so escalate to `max` and leave `ultra`.
+- `grok-4.6` — confirmed live as the new default on the logged-in Grok CLI; `grok-4.5`
+  still resolves if you need to pin the older model.
+- `gemini-3.7-flash-high` — confirmed live via `agy --model … -p`, and confirmed to
+  comply with the real security prompt (above). Don't add a separate `--effort` flag;
+  the tier is part of the model name.
 - `kimi-code/k3-max` — a **local alias you must add** to `~/.kimi-code/config.toml`
   (same `k3` model, `default_effort = "max"`); the Kimi CLI has no per-call effort
   flag, so this is the only way to pin K3 to max without changing the global default.
-  Validate with `kimi doctor`.
+  Validate with `kimi doctor`. **CLI upgrades delete it — see §6.1.**
 
 ### Independence caveat
-Two of the five workers (`opus`, `sonnet`) are the same model family and share some
+Two of the six workers (`opus`, `sonnet`) are the same model family and share some
 blind spots, so raw agreement count slightly overstates independence when both agree.
-A 2/5 made of `grok`+`kimi` (different families) is a stronger signal than a 2/5 made
-of `opus`+`sonnet`. The `weight` values partly compensate.
+A 2/6 made of `grok`+`kimi` (different families) is a stronger signal than a 2/6 made
+of `opus`+`sonnet`. The `weight` values partly compensate. The pool spans five families
+— Anthropic, OpenAI, xAI, Moonshot, Google.
 
 ---
 
@@ -221,9 +262,9 @@ chosen automatically by a token in each model's `cmd`:
 
 | Token in `cmd` | Method | Used by | Why |
 |----------------|--------|---------|-----|
-| *(none)* | piped on **stdin** | `claude`, `codex-fugu` | these read the prompt from stdin |
+| *(none)* | piped on **stdin** | `claude`, `codex` | these read the prompt from stdin |
 | `{prompt_file}` | written to a **temp file**, path substituted | `grok` | Grok takes `--prompt-file <path>` |
-| `{prompt}` | inline as **one argv element** | `kimi` (and the disabled `agy`/Gemini slot) | their headless flags take the prompt as an argument; neither CLI has a stdin or file prompt mode |
+| `{prompt}` | inline as **one argv element** | `kimi`, `gemini` (`agy`) | their headless flags take the prompt as an argument; neither CLI has a stdin or file prompt mode |
 
 Safety details baked in:
 - **No shell anywhere.** Every `cmd` is `shlex.split()` into an argv list and run
@@ -237,8 +278,8 @@ Safety details baked in:
   element to 128 KiB (`MAX_ARG_STRLEN`), so an unbounded inline prompt would die
   with `OSError(E2BIG)` and the worker would silently drop out. Instead, an
   oversize inline prompt raises a clear error naming the fix: switch that worker
-  to `api` mode (or a stdin/file-delivery CLI entry) for large targets. Only
-  `kimi` uses inline delivery among the active workers; the other four are
+  to `api` mode (or a stdin/file-delivery CLI entry) for large targets. Two active
+  workers use inline delivery — `kimi` and `gemini` — and the other four are
   unbounded (stdin or temp file).
 - Whenever the prompt is delivered by file or inline, **stdin is redirected from
   `/dev/null`**, so an interactive CLI can never hang waiting on a terminal.
@@ -310,7 +351,7 @@ python scripts/orchestrate.py --mode <MODE> --target <PATH-OR-TEXT> [options]
 |------|------------------|---------|
 | `--mode` (required) | `code_review` · `infra_hardening` · `dependency_audit` · `threat_model` · `incident_triage` | which analysis to run |
 | `--target` (required) | a path, or inline text | repo/file/diff/config/manifest, or a description (e.g. an architecture for `threat_model`) |
-| `--organizer` | `opus` (default) · `fugu` · `grok` | who scopes and synthesizes |
+| `--organizer` | `opus` (default) · `codex` · `grok` | who scopes and synthesizes |
 | `--workers` | comma list, e.g. `opus,grok,kimi` | override the worker set |
 | `--quick` | flag | use the cheaper 3-model subset (`sonnet,grok,kimi` — three different families, two of them billed outside the Anthropic allowance) |
 | `--skip-recon` | flag | skip the Phase-1 organizer pass |
@@ -325,7 +366,7 @@ python scripts/orchestrate.py --mode <MODE> --target <PATH-OR-TEXT> [options]
 
 **Examples**
 ```bash
-# Full 5-model review of a repo
+# Full 6-model review of a repo
 python scripts/orchestrate.py --mode code_review --target ~/Projects/myapp
 
 # Fast, cheap pass on just a diff, 3 models
@@ -449,9 +490,10 @@ Enforced in the prompt every model receives:
   the full six only for high-stakes reviews. Prefer adding a *different* model family
   over a second model from one you already have — independence is what the agreement
   score is actually measuring.
-- **When GPT access returns:** re-add `sol` under `workers:`
-  (`codex exec -m gpt-5.6-sol -c model_reasoning_effort=high`, stdin delivery) and
-  `terra` under `organizers:`, then decide whether `fugu` stays as a seventh worker.
+- **GPT seat restored (2026-07-31):** the OpenAI seat is back under both `organizers:`
+  and `workers:` as `codex` (`gpt-5.6-sol`, stdin delivery, `-s read-only` required so
+  the CLI's default approval mode doesn't hang waiting on a human). The `terra`
+  organizer variant was not added — only `codex`.
 
 ---
 
@@ -461,10 +503,11 @@ Enforced in the prompt every model receives:
 |---------|--------------|-----|
 | `PyYAML required` | dependency missing | `pip install pyyaml` |
 | A worker logs `CLI exit <n>` | wrong model string or not logged in | check the model id in `roster.yaml`; log into that CLI |
-| `kimi` fails with an unknown-model error | the `kimi-code/k3-max` alias isn't in `~/.kimi-code/config.toml` | add it (copy the `[models."kimi-code/k3"]` block, rename, `default_effort = "max"`), then `kimi doctor` |
-| `fugu` fails with "Not inside a trusted directory" | `codex-fugu` was run outside a git repo | keep `--skip-git-repo-check` in its `cmd` (it's there by default) |
+| `kimi` fails with `Model "kimi-code/k3-max" is not configured in config.toml` | the local alias is missing — most often because **a Kimi CLI upgrade rewrote `~/.kimi-code/config.toml`** and dropped it (happened 2026-08-01 → 2026-08-16 on v0.36.0) | re-add it (copy the `[models."kimi-code/k3"]` block, rename, `default_effort = "max"`), then `kimi doctor`. Pre-flight with `kimi -m kimi-code/k3-max -p "ok"` before any big run. Fallback: point the worker at plain `kimi-code/k3` (runs at `high`, not `max`) |
+| `codex` fails with "Not inside a trusted directory" | `codex exec` was run outside a git repo | keep `--skip-git-repo-check` in its `cmd` (it's there by default) |
+| `codex` worker hangs and never returns | `-s read-only` missing from its `cmd`, so Codex's default `on-request` approval mode is waiting on a human to approve an action | keep `-s read-only` in the `cmd` (it's there by default) |
 | `gemini` answers *about* a flag instead of the prompt | an AGY print-mode flag regression (seen 2026-07-24, fixed by 2026-07-27) | drop `--model` from its `cmd` and pick the model inside AGY instead |
-| A worker is excluded every single run with a polite "I can't help with that" | that model's provider declines security analysis (Gemini does this on both tiers) | drop it from `defaults.workers` — do **not** try to reword the prompt around a refusal |
+| A worker is excluded every single run with a polite "I can't help with that" | that model's provider declines security analysis (Gemini 3.1 **Pro** still does; 3.7 **Flash** no longer does, as of 2026-08-16) | drop it from `defaults.workers` — do **not** try to reword the prompt around a refusal |
 | `over the 100,000-byte limit for inline argv delivery` | inline (`{prompt}`) worker got a huge target; a single argument is capped at 128 KiB on Linux | switch that worker to `api` mode (see `roster.yaml` comments) or a stdin/file-delivery CLI |
 | A worker is "excluded from ensemble" | it returned prose/refusal instead of JSON | check that model's raw output; the run continues with the remaining workers and says so honestly |
 | `unknown organizer/worker` | typo in `--organizer` / `--workers` | the error lists the valid keys from `roster.yaml` |

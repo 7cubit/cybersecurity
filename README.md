@@ -61,17 +61,20 @@ Nothing sensitive should ever end up in this repo; see the `.gitignore` and the
 
 ## The roster
 
-**Organizer** (one): Claude Opus 5 *(default)*, fugu-ultra-v1.1, or Grok 4.5.
+Live-verified **2026-08-16**.
 
-**Workers** (fan out in parallel):
+**Organizer** (one): Claude Opus 5 *(default)*, GPT-5.6 Sol, or Grok 4.6.
 
-| Worker | Effort | Driven via |
-| --- | --- | --- |
-| Claude Opus 5 | high (`xhigh` to escalate) | Claude Code / Anthropic API |
-| Claude Sonnet 5 | high | Claude Code / Anthropic API |
-| fugu-ultra-v1.1 | xhigh | `codex-fugu exec` |
-| Grok 4.5 | high | Grok CLI / xAI API |
-| Kimi K3 | max | Kimi CLI / Moonshot (OpenAI-compatible) API |
+**Workers** (fan out in parallel — six models across five families):
+
+| Worker | Model id | Effort | Weight | Driven via |
+| --- | --- | --- | --- | --- |
+| Claude Opus 5 | `claude-opus-5` | high (`xhigh` to escalate) | 1.3 | Claude Code / Anthropic API |
+| Claude Sonnet 5 | `claude-sonnet-5` | high | 1.0 | Claude Code / Anthropic API |
+| GPT-5.6 Sol | `gpt-5.6-sol` | xhigh | 1.2 | `codex exec` (ChatGPT subscription) |
+| Grok 4.6 | `grok-4.6` | high | 1.0 | Grok CLI / xAI API |
+| Kimi K3 | `kimi-code/k3-max` | max | 0.9 | Kimi CLI / Moonshot (OpenAI-compatible) API |
+| Gemini 3.7 Flash | `gemini-3.7-flash-high` | high | 0.8 | Antigravity (AGY) CLI / Gemini API |
 
 As configured, **every entry runs via a subscription CLI — no API keys required.**
 Exact model strings, per-provider invocation, and which subscription can drive which
@@ -79,17 +82,24 @@ model headlessly are documented in
 [`references/model-roster.md`](references/model-roster.md). **Read that first** —
 verifying access mode per model is the step most likely to trip you up.
 
-Three notable absences, all explained in that file: **GPT-5.6** is out while the
-OpenAI seat is unavailable (`fugu-ultra-v1.1` covers the slot); **Claude Fable 5** is
-out because its safety classifiers can decline cyber-adjacent prompts and return a
-*successful but empty* response — which an agreement-weighted ensemble would misread
-as "this model found nothing"; and **Gemini** is out because both its Flash and Pro
-tiers refuse vulnerability analysis outright (verified 2026-07-27, refusal text
-quoted in `roster.yaml`).
+**Gemini came back on 2026-08-16.** It was excluded through July because it refused
+vulnerability analysis outright. That refusal has lifted on the **3.7 Flash** tier —
+retested against this skill's real worker prompt on a seeded sample, it returned
+correct, schema-conformant findings. **Gemini 3.1 Pro still refuses** and stays out.
 
-Kimi's `max` effort needs a one-time local alias (`kimi-code/k3-max` in
+Still deliberately absent: **Claude Fable 5**, because its safety classifiers can
+decline cyber-adjacent prompts and return a *successful but empty* response — which an
+agreement-weighted ensemble would misread as "this model found nothing."
+
+Kimi's `max` effort needs a local alias (`kimi-code/k3-max` in
 `~/.kimi-code/config.toml`) because the Kimi CLI has no per-call effort flag — the
-roster comments walk you through it.
+roster comments walk you through it. ⚠️ **A Kimi CLI upgrade silently deletes that
+alias** (it happened in early August 2026, leaving this worker dead for two weeks
+without an obvious error). Pre-flight before a big run:
+
+```bash
+kimi -m kimi-code/k3-max -p "ok"
+```
 
 > 📖 **Full feature reference:** [`FEATURES.md`](FEATURES.md) documents every mode,
 > flag, config option, prompt-delivery method, guardrail, and extension point in
@@ -116,8 +126,8 @@ pip install pyyaml   # only dependency; everything else is stdlib
 
 python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # modes:   code_review | infra_hardening | dependency_audit | threat_model | incident_triage
-# --organizer opus|fugu|grok
-# --workers  opus,sonnet,fugu,grok,kimi   (default: all)
+# --organizer opus|codex|grok
+# --workers  opus,sonnet,codex,grok,kimi,gemini   (default: all)
 # --quick    cheaper 3-model subset (sonnet,grok,kimi)
 # --dry-run  print exactly what would be sent to which providers, then exit
 # --sarif PATH  also write findings as SARIF 2.1.0 for CI code scanning
