@@ -61,20 +61,21 @@ Nothing sensitive should ever end up in this repo; see the `.gitignore` and the
 
 ## The roster
 
-Live-verified **2026-08-16**.
+Live-verified **2026-11-11** against a real target (this repo's own orchestrator).
 
-**Organizer** (one): Claude Opus 5 *(default)*, GPT-5.6 Sol, or Grok 4.6.
+**Organizer** (one): Claude Opus 5.5 *(default)*, gpt-6-luna, Grok 4.7, or — opt-in —
+Claude Fable 5.2.
 
-**Workers** (fan out in parallel — six models across five families):
+**Workers** (fan out in parallel — up to six models across five families):
 
-| Worker | Model id | Effort | Weight | Driven via |
+| Worker (key) | Model id | Effort | Weight | Driven via |
 | --- | --- | --- | --- | --- |
-| Claude Opus 5 | `claude-opus-5` | high (`xhigh` to escalate) | 1.3 | Claude Code / Anthropic API |
-| Claude Sonnet 5 | `claude-sonnet-5` | high | 1.0 | Claude Code / Anthropic API |
-| GPT-5.6 Sol | `gpt-5.6-sol` | xhigh | 1.2 | `codex exec` (ChatGPT subscription) |
-| Grok 4.6 | `grok-4.6` | high | 1.0 | Grok CLI / xAI API |
-| Kimi K3 | `kimi-code/k3-max` | max | 0.9 | Kimi CLI / Moonshot (OpenAI-compatible) API |
-| Gemini 3.7 Flash | `gemini-3.7-flash-high` | high | 0.8 | Antigravity (AGY) CLI / Gemini API |
+| Claude Opus 5.5 (`opus`) | `claude-opus-5-5` | high (`xhigh` to escalate) | 1.3 | Claude Code / Anthropic API |
+| Claude Sonnet 5.5 (`sonnet`) | `claude-sonnet-5-5` | high | 1.0 | Claude Code / Anthropic API |
+| gpt-6-luna (`codex`) | `gpt-6-luna` | high | 1.1 | `codex exec` (ChatGPT subscription) |
+| Grok 4.7 (`grok`) | `grok-4.7` | low (high overruns the time limit) | 1.0 | Grok CLI / xAI API |
+| Gemini 4 Carbon (`gemini`) | `gemini-4-carbon-high` | high | 1.0 | Antigravity (AGY) CLI / Gemini API |
+| Kimi K3 (`kimi`) — *optional* | `kimi-code/k3` | CLI default | 0.9 | Kimi CLI / Moonshot (OpenAI-compatible) API |
 
 As configured, **every entry runs via a subscription CLI — no API keys required.**
 Exact model strings, per-provider invocation, and which subscription can drive which
@@ -82,24 +83,33 @@ model headlessly are documented in
 [`references/model-roster.md`](references/model-roster.md). **Read that first** —
 verifying access mode per model is the step most likely to trip you up.
 
-**Gemini came back on 2026-08-16.** It was excluded through July because it refused
-vulnerability analysis outright. That refusal has lifted on the **3.7 Flash** tier —
-retested against this skill's real worker prompt on a seeded sample, it returned
-correct, schema-conformant findings. **Gemini 3.1 Pro still refuses** and stays out.
+**Optional seats.** A worker marked `optional: true` carries a `probe` command. If the
+probe succeeds the seat joins; if not it is *skipped* — not sent the target, not counted,
+and listed in the report as "skipped (optional, unavailable)" rather than as a failure.
+Kimi is set up this way, so a lapsed subscription costs nothing and a renewed one is
+picked up automatically.
 
-Still deliberately absent: **Claude Fable 5**, because its safety classifiers can
-decline cyber-adjacent prompts and return a *successful but empty* response — which an
-agreement-weighted ensemble would misread as "this model found nothing."
+**Opt-in seats** (defined, but not on the default panel — name them with `--workers`):
+**Claude Fable 5.2** (`fable`) — it works, but costs about twice Opus 5.5 and its safety
+measures can decline security work with a *successful but empty* response; **Gemini 4
+Argon** (`gemini_argon`) and **Gemini 3.8 Flash** (`gemini_flash`, used by `--quick`) —
+same family as the default Gemini seat, so only one Google model sits on the panel.
 
-Kimi's `max` effort needs a local alias (`kimi-code/k3-max` in
-`~/.kimi-code/config.toml`) because the Kimi CLI has no per-call effort flag — the
-roster comments walk you through it. ⚠️ **A Kimi CLI upgrade silently deletes that
-alias** (it happened in early August 2026, leaving this worker dead for two weeks
-without an obvious error). Pre-flight before a big run:
+**Gemini is back (2026-11-11).** It was disabled in September for hard-blocking real
+targets. All three current Gemini models returned parseable findings on a real
+~43,000-char target; the earlier blocks were on larger (71,000–90,000-char) targets, so
+treat that as proof at the size the seat is actually sent, not as a guarantee. If a
+block returns, the engine reports the seat as failed — drop it, never reword the prompt.
 
-```bash
-kimi -m kimi-code/k3-max -p "ok"
-```
+**Model ids go stale.** The OpenAI seat was silently dead before this refresh because
+the ChatGPT plan had stopped serving `gpt-6-astra`. If a seat fails with "model not
+supported", check what your CLI lists now and update `scripts/roster.yaml`.
+
+**Jev second opinion (optional, outside the engine).** If the Claude running the skill
+has the Jev judging tools (`mcp__jev__*`), it labels each merged finding *verified /
+contradicted / unsupported* after the report is written. Jev only labels — it never
+drops or approves a finding, it is not a panel seat, and this repo stores no Jev key or
+configuration. See `SKILL.md`.
 
 > 📖 **Full feature reference:** [`FEATURES.md`](FEATURES.md) documents every mode,
 > flag, config option, prompt-delivery method, guardrail, and extension point in
@@ -126,9 +136,10 @@ pip install pyyaml   # only dependency; everything else is stdlib
 
 python scripts/orchestrate.py --mode code_review --target /path/to/repo_or_diff
 # modes:   code_review | infra_hardening | dependency_audit | threat_model | incident_triage
-# --organizer opus|codex|grok
-# --workers  opus,sonnet,codex,grok,kimi,gemini   (default: all)
-# --quick    cheaper 3-model subset (sonnet,grok,kimi)
+# --organizer opus|codex|grok|fable
+# --workers  opus,sonnet,codex,grok,gemini,kimi   (default; kimi is optional — skipped if unavailable)
+#            opt-in seats: fable, gemini_argon, gemini_flash
+# --quick    cheaper 3-model subset (sonnet,grok,gemini_flash)
 # --dry-run  print exactly what would be sent to which providers, then exit
 # --sarif PATH  also write findings as SARIF 2.1.0 for CI code scanning
 # --secret-scanner regex|gitleaks|trufflehog   extra redaction pass (regex is the default)
