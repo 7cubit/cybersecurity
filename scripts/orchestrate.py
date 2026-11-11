@@ -463,6 +463,71 @@ def call_model(cfg: dict, prompt: str, timeout: int) -> str:
     return run_cli(cfg["cmd"], prompt, timeout)
 
 
+# ---------- optional seats (if available: use it / else: skip it) ----------
+
+PROBE_TIMEOUT_SECONDS = 90
+
+
+def _validate_optional(workers: dict) -> None:
+    """`optional: true` means "use this seat only if its probe says it is available", so an
+    optional seat with no probe has no way to be decided — refuse it at load, loudly."""
+    bad = [k for k, cfg in workers.items()
+           if isinstance(cfg, dict) and cfg.get("optional")
+           and not str(cfg.get("probe") or "").strip()]
+    if bad:
+        sys.exit(f"error: optional worker(s) {', '.join(bad)} have no `probe` command — "
+                 "an optional seat needs `probe: '<command>'` so the run can tell whether "
+                 "it is available (or remove `optional: true`)")
+
+
+def probe_seat(cfg: dict, timeout: int = PROBE_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Run an optional seat's availability probe. Available = exit 0 AND non-empty stdout.
+
+    The probe is a fixed roster command (no target content is ever substituted into it),
+    split to argv and executed with shell=False, stdin from /dev/null. Returns
+    (available, reason); the reason is one short redacted line."""
+    def _short(text: str) -> str:
+        return _redact(" ".join(str(text).split())[:200])[0]
+    try:
+        argv = shlex.split(str(cfg.get("probe") or ""))
+        if not argv:
+            return False, "no probe command"
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, text=True,
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"probe timed out after {timeout}s"
+    except FileNotFoundError:
+        return False, "probe command not found (CLI not installed?)"
+    except Exception as e:  # noqa: BLE001 — a probe must never take the run down
+        return False, _short(f"probe error: {e}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return False, _short(f"probe exit {proc.returncode}" + (f": {detail}" if detail else ""))
+    if not (proc.stdout or "").strip():
+        return False, "probe returned no output"
+    return True, "available"
+
+
+def probe_optional_workers(worker_cfgs: dict, timeout: int = PROBE_TIMEOUT_SECONDS) -> dict[str, str]:
+    """Probe every optional seat in parallel. Returns {name: reason} for the UNAVAILABLE ones."""
+    optional = {k: cfg for k, cfg in worker_cfgs.items() if cfg.get("optional")}
+    if not optional:
+        return {}
+    skipped: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(optional)) as ex:
+        futs = {ex.submit(probe_seat, cfg, timeout): name for name, cfg in optional.items()}
+        for fut in as_completed(futs):
+            ok, reason = fut.result()
+            if not ok:
+                skipped[futs[fut]] = reason
+    return skipped
+
+
+def _ensemble_notes(failures: list[str], skipped: list[str] | None = None) -> str:
+    notes = [f"- {x}" for x in failures] + [f"- {x}" for x in (skipped or [])]
+    return ("\n\n## Ensemble notes\n" + "\n".join(notes)) if notes else ""
+
+
 # ---------- findings parsing & merge ----------
 
 def parse_findings(raw: str) -> list[dict] | None:
@@ -612,7 +677,8 @@ def organizer_brief(org_cfg: dict, mode: str, target_text: str, timeout: int) ->
 
 
 def organizer_synthesis(org_cfg: dict, mode: str, brief: str,
-                        merged: list[dict], failures: list[str], timeout: int) -> str:
+                        merged: list[dict], failures: list[str], timeout: int,
+                        skipped: list[str] | None = None) -> str:
     payload = json.dumps(merged, indent=2, default=list)[:120_000]
     prompt = (CHARTER +
               "\nPhase 4 — synthesis. Below are de-duplicated findings from an "
@@ -640,9 +706,7 @@ def organizer_synthesis(org_cfg: dict, mode: str, brief: str,
         report = _fallback_report(mode, merged)  # deterministic if organizer fails
         report += (f"\n\n_(organizer synthesis unavailable: {_redact(str(e))[0]}; "
                    "showing merged findings)_")
-    if failures:
-        report += "\n\n## Ensemble notes\n" + "\n".join(f"- {x}" for x in failures)
-    return report
+    return report + _ensemble_notes(failures, skipped)
 
 
 def _fallback_report(mode: str, merged: list[dict]) -> str:
@@ -707,7 +771,9 @@ def _print_dry_run(args, org_key: str, org_cfg: dict, worker_cfgs: dict,
         f"workers:     {len(worker_cfgs)}  ->  would send the target to:",
     ]
     for name, cfg in worker_cfgs.items():
-        lines.append(f"   - {name:<8} {prov(cfg):<26} cap={caps[name]:,} chars  weight={weights[name]}")
+        opt = "  (optional — probed at run time)" if cfg.get("optional") else ""
+        lines.append(f"   - {name:<8} {prov(cfg):<26} cap={caps[name]:,} chars  "
+                     f"weight={weights[name]}{opt}")
     lines.append(f"out:         {args.out}" + (f"   + SARIF: {args.sarif}" if args.sarif else ""))
     lines.append("Re-run WITHOUT --dry-run to send the above to these providers.")
     print("\n".join(lines))
@@ -765,6 +831,7 @@ def main() -> None:
     if unknown:
         sys.exit(f"error: unknown worker(s) {', '.join(unknown)} — "
                  f"roster defines: {', '.join(roster['workers'])}")
+    _validate_optional(roster["workers"])
     worker_cfgs = {k: roster["workers"][k] for k in worker_keys}
     caps = {k: _worker_cap(cfg, global_cap) for k, cfg in worker_cfgs.items()}
     weights = {k: _worker_weight(cfg) for k, cfg in worker_cfgs.items()}
@@ -788,6 +855,25 @@ def main() -> None:
     if args.dry_run:
         _print_dry_run(args, org_key, org_cfg, worker_cfgs, caps, weights, target_text)
         return
+
+    # optional seats: if the probe says the seat is available it joins, else it is skipped
+    # BEFORE the fan-out — so the "N/M contributed" count and the weights stay honest, and an
+    # unavailable subscription is a quiet, labelled skip rather than a worker failure.
+    skipped_notes: list[str] = []
+    try:
+        probe_timeout = int(d.get("probe_timeout_seconds", PROBE_TIMEOUT_SECONDS))
+    except (TypeError, ValueError):
+        probe_timeout = PROBE_TIMEOUT_SECONDS
+    if probe_timeout <= 0:
+        probe_timeout = PROBE_TIMEOUT_SECONDS
+    for name, reason in sorted(probe_optional_workers(worker_cfgs, probe_timeout).items()):
+        print(f"[~] {name}: optional seat unavailable — skipped ({reason})", file=sys.stderr)
+        skipped_notes.append(f"{name}: skipped (optional, unavailable) — {reason}")
+        for table in (worker_cfgs, caps, weights):
+            table.pop(name, None)
+    if not worker_cfgs:
+        sys.exit("error: no workers left to run — every selected seat is optional and "
+                 "unavailable. Pick at least one non-optional worker with --workers.")
 
     brief = ("Phase-1 checklist: (skipped)" if args.skip_recon
              else organizer_brief(org_cfg, args.mode, target_text, timeout))
@@ -845,10 +931,11 @@ def main() -> None:
     print(f"[*] merged into {len(merged)} unique findings", file=sys.stderr)
 
     try:
-        report = organizer_synthesis(org_cfg, args.mode, brief, merged, failures, timeout)
+        report = organizer_synthesis(org_cfg, args.mode, brief, merged, failures, timeout,
+                                     skipped_notes)
     except Exception as e:  # noqa: BLE001 — deterministic fallback so a report ALWAYS lands
         print(f"[!] synthesis failed ({e}); writing deterministic merged report", file=sys.stderr)
-        report = _fallback_report(args.mode, merged)
+        report = _fallback_report(args.mode, merged) + _ensemble_notes(failures, skipped_notes)
     # vulnerability detail + redacted context is owner-only, not world-readable
     _write_private(args.out, report)
     print(f"[✓] report written to {args.out} (mode 0600)", file=sys.stderr)

@@ -417,3 +417,103 @@ green precisely because no code moved. Editing a security tool's input-handling 
 an unreviewed drive-by at the end of a version bump trades a loud, documented, pre-existing
 limitation for an untested code change. The limitation is now written into `roster.yaml`
 next to the two affected seats, with a workaround, which is the honest version.
+
+---
+
+## 2026-11-11 — full model refresh, an optional ("if/else") seat, and Jev as a second opinion
+
+**Request:** "update all the models … opus 5.5, sonnet 5.5, fable 5.2, gemini 4 carbon,
+gemini 4 argon, gemini 3.8 flash high, grok 4.7, codex … in codex I have only pro plan
+… and JevAI models as well." Then, mid-run: "Keep Kimi, we will buy again, but use
+if/else condition."
+
+**What was checked first (live, same day).** CLI versions: Claude Code 2.1.322,
+codex-cli 0.167.0, Grok 1.0.77, AGY 1.5.5, Kimi 2.5.2. Every candidate answered a
+one-line ping **except `gpt-6-astra`**, which the roster had pinned since 2026-09-16:
+
+> The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.
+
+So the OpenAI seat had been failing at spawn — a quietly smaller ensemble, the same shape
+as the August Kimi outage. The plan's catalog is `gpt-6-luna`, `gpt-5.6-terra`,
+`gpt-5.6-luna`.
+
+**The proof was a real target, not a toy sample** (the 2026-09-16 lesson): this repo's
+own `scripts/orchestrate.py`, ~43,000 chars, real `code_review` worker prompt, one run,
+eight candidate seats. Findings returned — Opus 5.5: 13 · Sonnet 5.5: 15 · Fable 5.2: 16
+· gpt-6-luna: 3 · Gemini 4 Carbon High: 11 · Gemini 4 Argon High: 9 · Gemini 3.8 Flash
+High: 9. All parseable; no Gemini filter block. Grok 4.7 at `high` timed out at 900 s on that run
+(and again on a solo retry). Streaming its output showed it was still reasoning — not
+refusing, not hung on a tool. Re-timed on the same target: `medium` 735 s / 11 findings,
+`low` 247 s / 11 findings; grok-4.6 at `high` 341 s / 12 findings. **Judgment call: the seat
+moves to `grok-4.7 --effort low`** — the newest model at a setting that finishes with wide
+margin — rather than `medium` (too close to the limit for larger targets) or staying on 4.6.
+`grok -m grok-4.6 --effort high` is documented as the proven fallback.
+
+**Done:**
+- `roster.yaml`: `opus` → `claude-opus-5-5`, `sonnet` → `claude-sonnet-5-5`, `codex` →
+  `gpt-6-luna` at `high` (weight 1.2 → 1.1), `gemini` → `gemini-4-carbon-high` and back
+  in `defaults.workers` (weight 0.8 → 1.0), new opt-in workers `fable`
+  (`claude-fable-5-2`), `gemini_argon`, `gemini_flash`, new opt-in organizer `fable`,
+  `kimi` restored as an optional seat. `quick_workers` → `[sonnet, grok, gemini_flash]`.
+  `concurrency` 4 → 6.
+- `orchestrate.py`: optional seats (`optional: true` + `probe`), see below. 11 new tests;
+  suite is 60 tests, all passing.
+- `SKILL.md`, `README.md`, `FEATURES.md`, `references/model-roster.md` brought in line.
+  `FEATURES.md` and `README.md` had missed the 2026-09-16 refresh entirely and still
+  described the 2026-08-16 roster; their older subsections are now labelled as history.
+
+**Judgment call 1 — Kimi "if/else" became an engine feature, not a comment.** The user's
+ask was a conditional seat. The engine already excluded a failed worker loudly, but that
+reports a lapsed subscription as a *failure* on every run and leaves it in the
+denominator of "N/M workers contributed". The new path probes an optional seat before the
+fan-out and removes it if unavailable, so the count and the weights stay honest and the
+report says "skipped (optional, unavailable)". This reverses the long-standing "don't
+touch `orchestrate.py` in a roster refresh" habit on purpose: it is the smallest change
+that does what was asked, it never puts target content into the probe, it runs with
+`shell=False`, and it is covered by tests. A probe only proves the subscription answers —
+a seat that passes the probe and then fails on the real target is still a failure.
+
+**Judgment call 2 — Kimi pins plain `kimi-code/k3`, not `k3-max` and not `k3.1-pro`.** The
+local `k3-max` alias was deleted by CLI upgrades twice. `k3.1-pro` is in the CLI's catalog
+but could not be tested (no subscription). **Unverified:** the probe's behaviour on the
+lapsed account was observed as an error message, but its exit code was not captured; if
+the CLI were to exit 0 while printing that error to stdout, the probe would pass and the
+seat would then fail loudly on the real call — safe, but noisier than intended. Check the
+first real run.
+
+**Judgment call 3 — Fable 5.2 is opt-in, not default and not excluded** (user's choice).
+It passed the real-target test, which retires the blanket "deliberately absent" stance.
+It stays off the everyday panel for cost (~2× Opus 5.5) and because a quiet decline, while
+now loud in the engine, still leaves a paid-for seat contributing nothing.
+
+**Judgment call 4 — only one Google seat on the default panel.** Carbon, Argon and Flash
+all passed. Running all three would add two votes that are not independent, inflating
+agreement. Carbon is the default; Flash serves the quick tier; Argon is opt-in.
+
+**Judgment call 5 — Gemini re-enabled on evidence one size smaller than the failure.** The
+2026-09-16 blocks were on 71,000–90,000-char targets; this proof is ~43,000 chars. The
+seat's cap is 60,000, so the proof covers what the seat is actually sent, and a returning
+block degrades loudly. That gap is written next to the seat rather than implied away.
+Only `code_review` was exercised; the other four modes are untested for the new seats.
+
+**Judgment call 6 — Codex at `high`, not the top tier** (user's choice: the plan is a
+small one). gpt-6-luna's 3 findings against 9–16 from the others is noted in the roster
+reference as an open question, and its weight was lowered rather than left at 1.2.
+
+**Judgment call 7 — Jev is documentation, not engine code** (user's choice). Jev is a
+judging model, so it cannot be a panel seat. `SKILL.md` now tells the Claude running the
+skill to label each merged finding with a Jev verdict *if* the `mcp__jev__*` tools are
+present. It only labels — never drops, downgrades or approves — and is never sent
+secrets. Nothing in this public repo wires Jev up or stores a key; it runs through the
+user's own MCP server and their own OpenRouter key.
+
+**Also verified:** the Kimi probe exits 1 on the lapsed plan, so the seat is skipped as
+designed. A live full-ensemble run on the final roster followed — result recorded below.
+
+**Final live run on the shipped roster (2026-11-11).** `orchestrate.py --mode code_review
+--target scripts/orchestrate.py`, default panel, Opus 5.5 organizer, full recon + synthesis,
+675 s end to end. Kimi probed, exit 1 (lapsed plan) → `[~] kimi: optional seat unavailable —
+skipped`, recorded under "Ensemble notes" as a skip, not a failure. Findings — Opus 5.5: 11 ·
+Sonnet 5.5: 22 · gpt-6-luna (high): 7 · Grok 4.7 (low): 12 · Gemini 4 Carbon High: 12.
+**5/5 workers contributed**, 63 merged findings, report written `0600`. The findings
+themselves (about this engine) were not triaged in this pass — that is separate work.

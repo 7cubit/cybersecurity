@@ -81,6 +81,9 @@ twice as likely to bite.
 **Workaround until fixed:** on a CJK-heavy target, set `max_chars` to ~30,000 on the
 `kimi` and `gemini` entries, or switch them to `mode: api`.
 
+**Update 2026-11-11:** there are now four inline seats, not two — `gemini`, `gemini_argon`,
+`gemini_flash` and `kimi` (optional). The gap and the workaround are unchanged.
+
 **If picked up:** give `_cap()` an optional byte budget and apply it for workers whose
 `cmd` contains `{prompt}`, truncating on an encoded-length basis rather than a character
 count — then test with a fixture that is genuinely multibyte, not ASCII padded to length.

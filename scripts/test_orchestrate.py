@@ -582,5 +582,141 @@ class TestReviewRegressions(unittest.TestCase):
         self.assertEqual(called.get("mode"), 0o600)
 
 
+# ---------------------------------------------------------------------------
+# Optional seats: `optional: true` + `probe:` (use it if available, else skip it)
+# ---------------------------------------------------------------------------
+_OPT_ROSTER = """\
+organizers:
+  org: {mode: cli, model: org-model, cmd: 'org-cli'}
+workers:
+  steady: {mode: cli, model: steady-model, cmd: 'steady-cli'}
+  maybe:
+    mode: cli
+    model: maybe-model
+    optional: true
+    probe: 'maybe-cli -p ok'
+    cmd: 'maybe-cli -p {prompt}'
+defaults:
+  organizer: org
+  workers: [steady, maybe]
+  quick_workers: [maybe]
+  probe_timeout_seconds: 7
+"""
+_FINDING = ('[{"title": "t", "severity": "high", "category": "c", '
+            '"location": "a.py:1", "evidence": "e", "impact": "i", "remediation": "r"}]')
+
+
+class TestProbeSeat(unittest.TestCase):
+    def test_exit_zero_with_output_is_available(self):
+        with mock.patch.object(orch.subprocess, "run",
+                               return_value=FakeProc(0, "ok\n")) as run:
+            ok, _ = orch.probe_seat({"probe": "maybe-cli -p ok"}, 7)
+        self.assertTrue(ok)
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["maybe-cli", "-p", "ok"])      # argv, never a shell string
+        self.assertNotIn("shell", kwargs)
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["timeout"], 7)
+
+    def test_nonzero_exit_is_unavailable_and_reason_is_redacted(self):
+        err = "provider.auth_error api_key=sk-abcdefghijklmnopqrstuvwxyz123456 no access"
+        with mock.patch.object(orch.subprocess, "run", return_value=FakeProc(1, "", err)):
+            ok, reason = orch.probe_seat({"probe": "maybe-cli -p ok"})
+        self.assertFalse(ok)
+        self.assertIn("probe exit 1", reason)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz123456", reason)
+
+    def test_empty_output_is_unavailable(self):
+        with mock.patch.object(orch.subprocess, "run", return_value=FakeProc(0, "  \n")):
+            self.assertFalse(orch.probe_seat({"probe": "maybe-cli -p ok"})[0])
+
+    def test_timeout_is_unavailable(self):
+        with mock.patch.object(orch.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("maybe-cli", 7)):
+            ok, reason = orch.probe_seat({"probe": "maybe-cli -p ok"}, 7)
+        self.assertFalse(ok)
+        self.assertIn("timed out", reason)
+
+    def test_missing_binary_is_unavailable(self):
+        with mock.patch.object(orch.subprocess, "run", side_effect=FileNotFoundError("x")):
+            ok, reason = orch.probe_seat({"probe": "maybe-cli -p ok"})
+        self.assertFalse(ok)
+        self.assertIn("not found", reason)
+
+    def test_only_optional_seats_are_probed(self):
+        cfgs = {"steady": {"cmd": "steady-cli"},
+                "maybe": {"optional": True, "probe": "maybe-cli -p ok"}}
+        with mock.patch.object(orch.subprocess, "run",
+                               return_value=FakeProc(2, "", "nope")) as run:
+            skipped = orch.probe_optional_workers(cfgs)
+        self.assertEqual(list(skipped), ["maybe"])
+        self.assertEqual(run.call_count, 1)
+
+
+class TestOptionalSeatsInMain(unittest.TestCase):
+    def _run_main(self, roster_text, probe, extra=()):
+        """Drive main() with model calls and the probe subprocess mocked.
+        Returns (workers_called, report_text, stderr_text, stdout_text)."""
+        called = []
+
+        def fake_call(cfg, prompt, timeout):
+            called.append(cfg.get("model"))
+            return "# report" if cfg.get("model") == "org-model" else _FINDING
+
+        with tempfile.TemporaryDirectory() as d:
+            roster = os.path.join(d, "roster.yaml")
+            Path(roster).write_text(roster_text)
+            out = os.path.join(d, "out.md")
+            argv = ["orchestrate.py", "--mode", "code_review", "--target",
+                    "a plain inline description of a small service", "--roster", roster,
+                    "--out", out, "--skip-recon", *extra]
+            err, std = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(orch, "call_model", side_effect=fake_call), \
+                 mock.patch.object(orch.subprocess, "run", side_effect=probe) as run, \
+                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(std):
+                orch.main()
+            report = Path(out).read_text() if os.path.exists(out) else ""
+        self.probe_calls = run.call_count
+        return called, report, err.getvalue(), std.getvalue()
+
+    def test_available_optional_seat_joins(self):
+        called, report, err, _ = self._run_main(_OPT_ROSTER, lambda *a, **k: FakeProc(0, "ok"))
+        self.assertIn("maybe-model", called)
+        self.assertIn("2/2 workers contributed", err)
+        self.assertNotIn("skipped (optional", report)
+
+    def test_unavailable_optional_seat_is_skipped_and_not_counted(self):
+        for probe in (lambda *a, **k: FakeProc(1, "", "provider.auth_error"),
+                      mock.Mock(side_effect=subprocess.TimeoutExpired("maybe-cli", 7)),
+                      mock.Mock(side_effect=FileNotFoundError("maybe-cli"))):
+            called, report, err, _ = self._run_main(_OPT_ROSTER, probe)
+            self.assertNotIn("maybe-model", called)          # never sent the target
+            self.assertIn("steady-model", called)
+            self.assertIn("[~] maybe: optional seat unavailable — skipped", err)
+            self.assertIn("1/1 workers contributed", err)     # honest denominator
+            self.assertNotIn("maybe failed", err)             # a skip is not a failure
+            self.assertIn("maybe: skipped (optional, unavailable)", report)
+
+    def test_all_seats_skipped_exits_clearly(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run_main(_OPT_ROSTER, lambda *a, **k: FakeProc(1, "", "no"), ["--quick"])
+        self.assertIn("no workers left", str(cm.exception))
+
+    def test_optional_without_probe_is_a_load_error(self):
+        bad = _OPT_ROSTER.replace("    probe: 'maybe-cli -p ok'\n", "")
+        with self.assertRaises(SystemExit) as cm:
+            self._run_main(bad, lambda *a, **k: FakeProc(0, "ok"))
+        self.assertIn("no `probe`", str(cm.exception))
+        self.assertIn("maybe", str(cm.exception))
+
+    def test_dry_run_never_probes_or_calls_a_model(self):
+        called, _, _, std = self._run_main(_OPT_ROSTER, lambda *a, **k: FakeProc(0, "ok"),
+                                           ["--dry-run"])
+        self.assertEqual(called, [])
+        self.assertEqual(self.probe_calls, 0)
+        self.assertIn("optional — probed at run time", std)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

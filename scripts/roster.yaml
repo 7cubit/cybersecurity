@@ -23,9 +23,20 @@
 #     (CJK, Cyrillic, emoji) 80,000 chars can exceed 100,000 bytes, so an inline worker
 #     raises and is dropped from the ensemble. It fails LOUDLY with a clear error rather
 #     than truncating silently, so the run degrades visibly — but it does lose a voter.
-#     This affects BOTH inline seats (kimi, gemini), so restoring gemini doubled the
-#     exposure. Workaround for a CJK-heavy target: drop those two workers' max_chars to
-#     ~30,000, or switch them to mode: api. Deferred fix tracked in dnm-def.md.
+#     The inline seats are the Gemini ones (gemini, gemini_argon, gemini_flash) and kimi,
+#     so those are the ones exposed. Workaround for a CJK-heavy target: drop its max_chars to ~30,000,
+#     or switch it to mode: api. Deferred fix tracked in dnm-def.md. NOTE: an oversize
+#     inline target does not always raise — on 2026-09-16 a ~90,000-char target instead
+#     came back UNPARSEABLE and the seat was dropped from two ensembles. Keep it small.
+#   * optional + probe -> an "if it is available, use it — else skip it" seat. With
+#     `optional: true` the engine runs the seat's `probe` command first (a fixed roster
+#     command, argv, no shell, no target content, short timeout). Exit 0 with some output
+#     = the seat joins as normal. Anything else (non-zero exit, timeout, CLI not
+#     installed, empty output) = the seat is SKIPPED before the fan-out: it is not sent
+#     the target, it is not counted in "N/M workers contributed", and the report lists it
+#     as "skipped (optional, unavailable)" — which is not a failure. Use it for a
+#     subscription that comes and goes. `optional: true` without a `probe` is an error.
+#     Probe timeout: defaults.probe_timeout_seconds (90 if unset). --dry-run never probes.
 #   * weight    -> how much this model's vote counts toward weighted agreement (a
 #     stronger model can outweigh a weaker one). Defaults to 1.0. Tune to taste.
 #
@@ -35,9 +46,53 @@
 # the ensemble degrades gracefully to whatever you actually have.
 #
 # ---------------------------------------------------------------------------
-# Roster refreshed 2026-08-16. Every invocation below was smoke-tested live on
+# 2026-11-11 — FULL MODEL REFRESH. THE OPENAI SEAT WAS DEAD; GEMINI IS BACK; KIMI IS
+# CONDITIONAL; FABLE IS OPT-IN.
+#   Proven the same day with a REAL target, not a toy sample: this repo's own
+#   scripts/orchestrate.py (~43,000 chars) through the real code_review worker prompt.
+#     opus   claude-opus-5-5        13 findings      sonnet claude-sonnet-5-5   15 findings
+#     fable  claude-fable-5-2       16 findings      codex  gpt-6-luna           3 findings
+#     gemini-4-carbon-high          11 findings      gemini-4-argon-high         9 findings
+#     gemini-3.8-flash-high          9 findings      (all parseable, no filter block)
+#   * opus   claude-opus-5   -> claude-opus-5-5   (worker + default organizer).
+#   * sonnet claude-sonnet-5 -> claude-sonnet-5-5.
+#   * codex  gpt-6-astra     -> gpt-6-luna, effort xhigh -> high. THE SEAT WAS DEAD: on
+#     this ChatGPT plan gpt-6-astra now answers "The 'gpt-6-astra' model is not supported
+#     when using Codex with a ChatGPT account" (codex-cli 0.167.0), so the worker was
+#     failing at spawn. The plan's catalog is gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna.
+#     Effort is `high`, not the top tier, because the plan is a small one.
+#   * gemini RE-ENABLED on gemini-4-carbon-high, back in defaults.workers. Two more Google
+#     seats are defined but opt-in: gemini_argon (gemini-4-argon-high) and gemini_flash
+#     (gemini-3.8-flash-high, used by the quick tier). All three are ONE family, so only
+#     one sits on the default panel. Read the caveat on the gemini entry.
+#   * kimi RESTORED as an OPTIONAL seat (`optional: true` + `probe`). The subscription has
+#     lapsed today, so the probe fails and the seat is skipped quietly; it rejoins by
+#     itself when the plan is renewed. No local alias is depended on any more.
+#   * fable ADDED, OPT-IN ONLY (claude-fable-5-2) as a worker and as an organizer. It is no
+#     longer "deliberately excluded" — see its entry for why it stays off the default panel.
+#   * grok-4.6 -> grok-4.7, effort high -> LOW. On a real ~43K-char target 4.7 at `high`
+#     ran past the 900 s limit twice (still reasoning, not refusing); `medium` took 735 s;
+#     `low` took 247 s with 11 findings (4.6 at high: 341 s, 12 findings). See the grok entry.
+#   Default panel: opus, sonnet, codex, grok, gemini, kimi(optional) — up to 6 seats and
+#   5 families (Anthropic x2, OpenAI, xAI, Google, Moonshot when available).
+#
+# HISTORY — older refreshes, newest first below the 2026-11-11 entry above.
+#
+# Roster refreshed 2026-08-16. Every invocation of that day's roster was smoke-tested live on
 # this machine that day (claude, codex, grok, agy, kimi each answered a real
 # single-turn prompt on the exact model id pinned here).
+#
+# 2026-09-16 — GPT SEAT BUMPED, KIMI RETIRED, GEMINI BUMPED + RESIZED.
+#   * codex gpt-5.6-sol -> gpt-6-astra (both answer live; astra is the newer seat and
+#     `xhigh` is its max tier). It also inherits Kimi's cross-checker/verifier role.
+#   * kimi REMOVED. The `kimi-code/k3-max` alias was missing AGAIN (CLI v0.43.0), and the
+#     Moonshot account is quota-blocked (403, weekly limit) — so even `kimi-code/k3` is
+#     dead. See the retirement note where the worker block used to be.
+#   * gemini 3.7 -> 3.8 Flash High, and the seat is DISABLED — the refusal is back. It
+#     returns a hard "blocked by Gemini's filters" message on real targets (three separate
+#     targets, including a small one), while still PASSING the seeded toy sample. Lesson:
+#     the seeded smoke test does not prove this seat works. See its entry.
+#   Ensemble is now 4 seats / 3 families (Anthropic x2, OpenAI, xAI).
 #
 # 2026-08-16 — MODEL BUMP + TWO REPAIRS.
 #   * grok-4.5 -> grok-4.6. `grok models` now reports 4.6 as the default and 4.5
@@ -63,149 +118,204 @@
 #   entry are all deleted. Do NOT reintroduce a `codex-fugu` entry: that command
 #   no longer exists and the entry would fail at spawn.
 #
-# NOT in this roster, deliberately:
-#   * Claude Fable 5 — Anthropic's own guidance excludes security analysis from its
-#     bug-finding gains, and its safety classifiers can DECLINE cyber-adjacent
-#     prompts while still returning a successful, empty response. A silently empty
-#     worker is the one failure mode a security ensemble must not have.
-#   * Gemini 3.1 Pro — retested 2026-08-16 and it STILL refuses ("Sorry, I cannot
-#     fulfill your request to analyze the provided code snippet for
-#     vulnerabilities"). Only the 3.7 Flash tier complies. Do not promote the Pro
-#     tier into a worker slot on the assumption that 3.7's fix applies to it.
+#
+# NOT on the default panel, deliberately (all are defined below and usable by name):
+#   * fable (Claude Fable 5.2) — opt-in. It costs about 2x Opus 5.5, and its safety
+#     measures can decline security work while still returning a successful, EMPTY
+#     response. The engine excludes an unparseable reply loudly, so that cannot be
+#     miscounted as "found nothing" — but the seat then adds nothing for the price.
+#   * gemini_argon, gemini_flash — same family as the default `gemini` seat; adding them
+#     to one run would count Google's opinion two or three times.
+# NOT in this roster at all:
+#   * Gemini 3.1 Pro — last retested 2026-08-16 and it refused. Not retested since (AGY
+#     no longer lists it on 2026-11-11).
 # ---------------------------------------------------------------------------
 
 organizers:
   opus:
     mode: cli
-    model: claude-opus-5
-    cmd: 'claude -p --model claude-opus-5 --effort high'   # prompt on stdin
+    model: claude-opus-5-5   # bumped from claude-opus-5 2026-11-11
+    cmd: 'claude -p --model claude-opus-5-5 --effort high'   # prompt on stdin
     # api fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
+
+  fable:
+    mode: cli                # OPT-IN organizer (--organizer fable); ~2x the cost of opus
+    model: claude-fable-5-2
+    cmd: 'claude -p --model claude-fable-5-2 --effort high'   # prompt on stdin
+    # If it declines the synthesis, the engine falls back to the deterministic merged
+    # report, so a report always lands — but prefer `opus` unless you want Fable's read.
 
   codex:
     mode: cli                # OpenAI Codex CLI, logged in via the ChatGPT subscription
-    model: gpt-5.6-sol
-    cmd: 'codex exec --skip-git-repo-check --color never -s read-only -m gpt-5.6-sol -c model_reasoning_effort=xhigh'
+    model: gpt-6-luna        # gpt-6-astra is no longer served on this plan (2026-11-11)
+    cmd: 'codex exec --skip-git-repo-check --color never -s read-only -m gpt-6-luna -c model_reasoning_effort=high'
     # stdin delivery. --skip-git-repo-check is REQUIRED when the cwd isn't a git repo.
     # -s read-only is REQUIRED: the default approval mode blocks waiting for a human.
 
   grok:
     mode: cli                # logged in via grok.com — no API key needed
-    model: grok-4.6
-    cmd: 'grok -m grok-4.6 --effort high --output-format plain --prompt-file {prompt_file}'
+    model: grok-4.7          # at LOW effort — see the grok worker entry for the timing evidence
+    cmd: 'grok -m grok-4.7 --effort low --output-format plain --prompt-file {prompt_file}'
     # api fallback: mode: api, base_url https://api.x.ai/v1, api_key_env XAI_API_KEY
 
 workers:
   opus:
     mode: cli
-    model: claude-opus-5
+    model: claude-opus-5-5   # bumped from claude-opus-5 2026-11-11
     effort: high             # bump to xhigh for a high-stakes review (cost/latency lever)
     max_chars: 200000        # stdin delivery — large context OK
     weight: 1.3              # highest-precision reviewer; also the preferred verifier
-    cmd: 'claude -p --model claude-opus-5 --effort high'
+    cmd: 'claude -p --model claude-opus-5-5 --effort high'
     # api fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
 
   sonnet:
     mode: cli
-    model: claude-sonnet-5
+    model: claude-sonnet-5-5 # bumped from claude-sonnet-5 2026-11-11
     effort: high
     max_chars: 200000        # stdin delivery — large context OK
     weight: 1.0
-    cmd: 'claude -p --model claude-sonnet-5 --effort high'
+    cmd: 'claude -p --model claude-sonnet-5-5 --effort high'
     # api fallback: mode: api, base_url https://api.anthropic.com, ANTHROPIC_API_KEY
 
-  codex:
-    mode: cli                # the real OpenAI seat — restored 2026-07-31
-    model: gpt-5.6-sol
-    effort: xhigh
+  # OPT-IN ONLY — not in defaults.workers. Ask for it by name: --workers opus,fable,...
+  # Passed the real-target test on 2026-11-11 with 16 parseable findings. Kept off the
+  # everyday panel for two reasons: it costs about 2x Opus 5.5, and its safety measures can
+  # decline security work while returning a successful, empty response. The engine reports
+  # an unparseable reply as an excluded seat (never as "0 findings"), so a decline is loud —
+  # but the seat then contributes nothing. Same family as opus + sonnet (Anthropic).
+  fable:
+    mode: cli
+    model: claude-fable-5-2
+    effort: high
     max_chars: 200000        # stdin delivery — large context OK
-    weight: 1.2              # strong on code and diffs; independent family, safe for security
-    cmd: 'codex exec --skip-git-repo-check --color never -s read-only -m gpt-5.6-sol -c model_reasoning_effort=xhigh'
+    weight: 1.0
+    cmd: 'claude -p --model claude-fable-5-2 --effort high'
+
+  codex:
+    mode: cli                # the real OpenAI seat — an independent family
+    model: gpt-6-luna
+    effort: high             # deliberately NOT the top tier: the ChatGPT plan is a small one
+    max_chars: 200000        # stdin delivery — large context OK
+    weight: 1.1              # independent family; 3 findings on the 2026-11-11 real-target test
+    cmd: 'codex exec --skip-git-repo-check --color never -s read-only -m gpt-6-luna -c model_reasoning_effort=high'
+    # 2026-11-11: gpt-6-astra -> gpt-6-luna. On this ChatGPT plan astra now returns
+    #   "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account"
+    # (codex-cli 0.167.0), so this seat had been failing at spawn until this change. The
+    # plan's catalog is gpt-6-luna (newest), gpt-5.6-terra, gpt-5.6-luna — terra also
+    # answered a live call and is the fallback. If your plan serves a stronger model, put
+    # its id in BOTH `model` and `-m` here and in the organizer entry.
+    # Effort: the CLI's tiers are now low | medium | high | xhigh | max (`max` is new and
+    # sits above xhigh). Raise to xhigh/max for a high-stakes review if the plan allows.
     # -s read-only is REQUIRED — the default approval mode is `on-request`, which stops
     # and waits for a human and will hang the worker. read-only is also correct for a
     # review: this worker must never write to the target.
     # There is NO --effort flag on this CLI; effort is -c model_reasoning_effort=<value>,
     # and the CLI ACCEPTS A MISSPELLED VALUE SILENTLY rather than erroring — do not retype it.
-    # Heavy: a trivial prompt still burns ~20K tokens. Drop to `high` if runs get slow.
+    # Heavy: a trivial prompt still burns ~10-20K tokens.
     # Prints a session preamble before the answer — parse_findings recovers the JSON
     # array out of surrounding prose, so that is harmless.
 
   grok:
     mode: cli                # logged in via grok.com — no API key needed
-    model: grok-4.6
-    effort: high
+    model: grok-4.7
+    effort: low              # NOT high — 4.7 at high overruns timeout_seconds (see below)
     max_chars: 200000        # temp-file delivery — no arg-size limit
     weight: 1.0
-    cmd: 'grok -m grok-4.6 --effort high --output-format plain --prompt-file {prompt_file}'
-    # 4.6 is the CLI default as of 2026-08-16; `grok-4.5` still resolves as a fallback.
+    cmd: 'grok -m grok-4.7 --effort low --output-format plain --prompt-file {prompt_file}'
+    # Timing on a real ~43K-char target, 2026-11-11 (Grok CLI 1.0.77):
+    #   4.7 high   -> exceeded 900 s twice (still reasoning — not a refusal, not a crash)
+    #   4.7 medium -> 735 s, 11 findings (too close to the limit for larger targets)
+    #   4.7 low    -> 247 s, 11 findings   <- this seat
+    #   4.6 high   -> 341 s, 12 findings   <- proven fallback: `grok -m grok-4.6 --effort high`
+    # Do not raise the effort without also raising defaults.timeout_seconds and re-timing.
     # api fallback: mode: api, base_url https://api.x.ai/v1, api_key_env XAI_API_KEY
 
-  # RE-ENABLED 2026-08-16 — the refusal that disabled this slot on 2026-07-27 has lifted
-  # on the 3.7 Flash tier. Retested with this skill's REAL worker prompts, not a softball:
-  #   * code_review     -> sample seeded with a hardcoded API key, a concatenated SQL query
-  #                        and an os.system() command injection. Returned all three as clean,
-  #                        schema-conformant JSON with correct severities.
-  #   * threat_model    -> STRIDE walk of a JWT/Flask API. Complied, correct schema.
-  #   * incident_triage -> SSH brute-force + suspicious-sudo auth.log excerpt. Complied.
-  # MODE COVERAGE IS 3 OF 5. infra_hardening and dependency_audit were NOT retested — they
-  # are less dual-use-shaped than incident_triage (which passed), so the risk is low, but
-  # that is an inference, not a measurement. Prove them before relying on this seat there.
-  # STILL REFUSING: `gemini-3.1-pro-high` — retested the same day, same refusal text.
-  # Only the Flash tier complies; do not promote the Pro tier into this slot.
-  # WHY THIS IS NOW SAFE TO RUN: the old objection was that a classifier refusal returns a
-  # SUCCESSFUL response with no findings, which an agreement-weighted ensemble would read as
-  # "found nothing" rather than "did not run". orchestrate.py closes that hole — a worker
-  # whose output yields no parseable JSON array is EXCLUDED from the ensemble and reported
-  # as a failure, never counted as 0 findings. A future re-refusal degrades loudly, not silently.
-  # Re-verify with the seeded sample above after any AGY or model-policy change, and do NOT
-  # reword the prompt to slip past a refusal if one returns — drop the slot instead.
+  # RE-ENABLED 2026-11-11 on Gemini 4 Carbon (High). History of this seat: disabled
+  # 2026-07-27 (refused), restored 2026-08-16 on 3.7 Flash, disabled again 2026-09-16 when
+  # 3.8 Flash hard-blocked real targets ("This request was blocked by Gemini's filters").
+  #
+  # EVIDENCE FOR RE-ENABLING (AGY 1.5.5): the real-target run described at the top of this
+  # file. gemini-4-carbon-high returned 11 parseable findings, gemini-4-argon-high 9 and
+  # gemini-3.8-flash-high 9. No filter block on any of the three.
+  #
+  # HONEST CAVEAT: the 2026-09-16 blocks were on ~71,000-90,000-char targets. This proof
+  # is on a ~43,000-char target, under this seat's 60,000-char cap. It shows the seat works
+  # at the size it is actually sent; it does not prove the filter is gone for good.
+  #
+  # THE LESSON THAT STILL APPLIES: a seeded toy sample is NOT proof this seat works — on
+  # 2026-09-16 it passed the toy sample while blocking real targets. Re-prove on a REAL
+  # target after any AGY or model-policy change.
+  #
+  # IF THE BLOCK RETURNS: the engine excludes a worker whose output has no parseable JSON
+  # array and reports it as a failure — never as "0 findings". Drop the seat from
+  # defaults.workers and say so. Do NOT reword the prompt to slip past a filter; that is
+  # explicitly out of bounds in SKILL.md.
   gemini:
     mode: cli                # Antigravity (AGY) CLI — uses your Google login
-    model: gemini-3.7-flash-high
+    model: gemini-4-carbon-high
     effort: high             # the tier is baked into the model name (-high/-medium/-low)
-    max_chars: 80000         # inline (-p) delivery — MUST stay under the 100 KB arg limit
-    weight: 0.8              # independent family (Google); newly restored, so weighted light
-    cmd: 'agy --model gemini-3.7-flash-high --print-timeout 15m -p {prompt}'
+    max_chars: 60000         # inline (-p) delivery — keep well under the 100 KB arg limit
+    weight: 1.0              # independent family (Google)
+    cmd: 'agy --model gemini-4-carbon-high --print-timeout 15m -p {prompt}'
     # Do NOT add a separate --effort flag — the tier is part of the model name.
     # AGY has no stdin or file prompt mode, hence the inline cap. The standalone `gemini`
-    # CLI still rejects this machine's subscription login (Google IneligibleTierError).
-    # api fallback: mode: api, Gemini/Vertex endpoint, GEMINI_API_KEY
+    # CLI rejected this machine's subscription login (Google IneligibleTierError) when
+    # last tried. api fallback: mode: api, Gemini/Vertex endpoint, GEMINI_API_KEY
 
+  # OPT-IN — the other two Google seats. Same family as `gemini`, so do not run them
+  # alongside it expecting extra independence: three Google votes are one opinion.
+  gemini_argon:
+    mode: cli
+    model: gemini-4-argon-high
+    effort: high
+    max_chars: 60000
+    weight: 0.8
+    cmd: 'agy --model gemini-4-argon-high --print-timeout 15m -p {prompt}'
+
+  gemini_flash:              # the quick tier's Google seat (see defaults.quick_workers)
+    mode: cli
+    model: gemini-3.8-flash-high
+    effort: high
+    max_chars: 60000
+    weight: 0.8
+    cmd: 'agy --model gemini-3.8-flash-high --print-timeout 15m -p {prompt}'
+
+  # OPTIONAL SEAT — "if the subscription is live, use it; else skip it."
+  # Restored 2026-11-11 after its 2026-09-16 retirement. State that day (Kimi CLI 2.5.2):
+  # the probe answers
+  #   "provider.auth_error: Your current subscription does not have access to Kimi Code
+  #    right now"
+  # so the seat is SKIPPED today, and it rejoins by itself once the plan is renewed —
+  # no edit to this file needed.
+  # Model id: plain `kimi-code/k3`, the id last proven to work. The CLI's own catalog now
+  # also lists k3-256k, k3.1-pro and k3.1-pro-highspeed; k3.1-pro is the likely upgrade but
+  # is UNVERIFIED (no subscription to test with) — prove it on a real target before
+  # switching. Do NOT bring back the local `kimi-code/k3-max` alias: CLI upgrades deleted
+  # it twice and each time the seat died at spawn.
+  # `kimi --help` (2.5.2) shows -m/--model and -p/--prompt only: still no per-call effort
+  # flag and no stdin or file prompt mode, hence inline delivery and the cap below.
   kimi:
-    mode: cli                # OAuth-logged-in kimi-code CLI — no API key needed
-    model: kimi-code/k3-max  # K3 pinned to MAX thinking (see note below)
-    effort: max
-    max_chars: 80000         # inline (-p) delivery — MUST stay under the 100 KB arg limit
-    weight: 0.9              # verbose; independent family, so valuable as a cross-check
-    cmd: 'kimi -m kimi-code/k3-max -p {prompt}'
-    # The Kimi CLI has NO per-call effort flag — max effort must come from config.
-    # `kimi-code/k3-max` is a local alias in ~/.kimi-code/config.toml: same k3 model
-    # and 1M context as `kimi-code/k3`, but default_effort = "max". Add it there
-    # (copy the [models."kimi-code/k3"] block, rename, set default_effort = "max")
-    # or this entry will fail with an unknown-model error. `kimi doctor` validates.
-    #
-    # FRAGILE — RE-CHECK AFTER EVERY KIMI CLI UPGRADE. This alias is local-only, and a
-    # Kimi CLI upgrade REWRITES config.toml from its own model catalog, silently dropping
-    # it. That is exactly what happened between 2026-08-01 and 2026-08-16 (found on CLI
-    # v0.36.0): this worker was failing at spawn on every single run with
-    #   error: failed to run prompt: Model "kimi-code/k3-max" is not configured in config.toml
-    # Cheap check before a big review: `kimi -m kimi-code/k3-max -p "ok"`. If it errors,
-    # re-add the block. Fallback that always works but runs at `high`, not `max`:
-    # switch model+cmd to `kimi-code/k3`.
-    # inline is capped at 100,000 bytes — for larger targets use the api fallback:
-    # mode: api, base_url https://platform.moonshot.ai/v1, api_key_env MOONSHOT_API_KEY
+    mode: cli                # Kimi Code CLI — uses your Moonshot login
+    model: kimi-code/k3
+    optional: true           # skipped (not failed) when the probe below does not succeed
+    probe: 'kimi -m kimi-code/k3 -p ok'
+    max_chars: 80000         # inline (-p) delivery — stay under the 100 KB arg limit
+    weight: 0.9              # independent family (Moonshot)
+    cmd: 'kimi -m kimi-code/k3 -p {prompt}'
+    # api fallback: mode: api, Moonshot OpenAI-compatible endpoint, MOONSHOT_API_KEY
 
 defaults:
   organizer: opus
-  # Five model families: Anthropic (opus, sonnet), OpenAI (codex), xAI (grok),
-  # Moonshot (kimi), Google (gemini — restored 2026-08-16, see its entry above).
-  workers: [opus, sonnet, codex, grok, kimi, gemini]
-  # cheaper default subset for routine reviews: three families, two of them
-  # (grok.com, Moonshot) billed outside the Anthropic allowance. Swap `sonnet` for
-  # `gemini` to get an all-non-Anthropic quick tier; left as-is because sonnet is
-  # the most schema-literal worker and the merge step depends on clean JSON.
-  quick_workers: [sonnet, grok, kimi]
-  concurrency: 6             # raised from 5 with the gemini slot restored — keep this
-                             # >= len(workers) or the last worker waits a full round
-  timeout_seconds: 900       # max-effort workers are slow; 600s was cutting them off
+  # Up to five model families: Anthropic (opus, sonnet), OpenAI (codex), xAI (grok),
+  # Google (gemini) and Moonshot (kimi — optional, joins only when its probe succeeds).
+  workers: [opus, sonnet, codex, grok, gemini, kimi]
+  # Cheaper subset for routine reviews: three families, two of them (grok.com, Google)
+  # billed outside the Anthropic allowance. sonnet stays because it is the most
+  # schema-literal worker and the merge step depends on clean JSON.
+  quick_workers: [sonnet, grok, gemini_flash]
+  concurrency: 6             # one per worker — keep this >= len(workers) or the last
+                             # worker waits a full round
+  timeout_seconds: 900       # high-effort workers are slow; 600s was cutting them off
+  probe_timeout_seconds: 90  # how long an optional seat's availability probe may take
   max_target_chars: 180000   # default per-model cap when a worker sets no max_chars
                              # (also overridable at runtime with --max-chars)
