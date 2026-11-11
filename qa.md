@@ -517,3 +517,16 @@ skipped`, recorded under "Ensemble notes" as a skip, not a failure. Findings —
 Sonnet 5.5: 22 · gpt-6-luna (high): 7 · Grok 4.7 (low): 12 · Gemini 4 Carbon High: 12.
 **5/5 workers contributed**, 63 merged findings, report written `0600`. The findings
 themselves (about this engine) were not triaged in this pass — that is separate work.
+
+**Post-merge follow-up (2026-11-11) — second reviewer's findings on the probe path.** The
+Gemini 4 Carbon High diff review (failure-modes lens) reported after the refresh had merged
+(the owner said to push while it was still running; gpt-6-luna's review had already come back
+clean). Each point was checked against the source before acting. **Fixed:** the skip reason
+was truncated to 200 chars *before* redaction, so a key straddling the cut could leak a prefix
+into the report — now redacted first; a whitespace-only stderr hid the real error on stdout;
+probe output is decoded with `errors="replace"`; a non-string or unbalanced-quote `probe`
+value is now a load error instead of a silent skip on every run. Four tests added (64 total).
+**Not changed, deliberately:** running the probe in its own process group and killing the
+group on timeout. `run_cli` has the same shape for every worker call, so changing only the
+probe would be inconsistent; the hang is bounded by `probe_timeout_seconds`. Logged, not built.
+
