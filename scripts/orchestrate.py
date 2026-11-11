@@ -471,11 +471,19 @@ PROBE_TIMEOUT_SECONDS = 90
 def _validate_optional(workers: dict) -> None:
     """`optional: true` means "use this seat only if its probe says it is available", so an
     optional seat with no probe has no way to be decided — refuse it at load, loudly."""
+    def _usable(probe) -> bool:
+        # must be a plain string that splits to a non-empty argv — a YAML list/bool or an
+        # unbalanced quote would otherwise pass load and silently skip the seat on every run
+        if not isinstance(probe, str):
+            return False
+        try:
+            return bool(shlex.split(probe))
+        except ValueError:
+            return False
     bad = [k for k, cfg in workers.items()
-           if isinstance(cfg, dict) and cfg.get("optional")
-           and not str(cfg.get("probe") or "").strip()]
+           if isinstance(cfg, dict) and cfg.get("optional") and not _usable(cfg.get("probe"))]
     if bad:
-        sys.exit(f"error: optional worker(s) {', '.join(bad)} have no `probe` command — "
+        sys.exit(f"error: optional worker(s) {', '.join(bad)} have no usable `probe` command — "
                  "an optional seat needs `probe: '<command>'` so the run can tell whether "
                  "it is available (or remove `optional: true`)")
 
@@ -487,13 +495,14 @@ def probe_seat(cfg: dict, timeout: int = PROBE_TIMEOUT_SECONDS) -> tuple[bool, s
     split to argv and executed with shell=False, stdin from /dev/null. Returns
     (available, reason); the reason is one short redacted line."""
     def _short(text: str) -> str:
-        return _redact(" ".join(str(text).split())[:200])[0]
+        # redact FIRST, then truncate — cutting a token in half would stop it matching
+        return _redact(" ".join(str(text).split())[:4096])[0][:200]
     try:
         argv = shlex.split(str(cfg.get("probe") or ""))
         if not argv:
             return False, "no probe command"
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, text=True,
-                              capture_output=True, timeout=timeout)
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                              errors="replace", capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, f"probe timed out after {timeout}s"
     except FileNotFoundError:
@@ -501,7 +510,7 @@ def probe_seat(cfg: dict, timeout: int = PROBE_TIMEOUT_SECONDS) -> tuple[bool, s
     except Exception as e:  # noqa: BLE001 — a probe must never take the run down
         return False, _short(f"probe error: {e}")
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
+        detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
         return False, _short(f"probe exit {proc.returncode}" + (f": {detail}" if detail else ""))
     if not (proc.stdout or "").strip():
         return False, "probe returned no output"

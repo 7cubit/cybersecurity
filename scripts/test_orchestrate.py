@@ -643,6 +643,32 @@ class TestProbeSeat(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not found", reason)
 
+    def test_secret_straddling_the_truncation_point_is_still_redacted(self):
+        # redaction must run BEFORE the 200-char cut, or half a token slips through
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        err = "x" * 170 + " api_key=" + secret + " trailing"
+        with mock.patch.object(orch.subprocess, "run", return_value=FakeProc(1, "", err)):
+            _, reason = orch.probe_seat({"probe": "maybe-cli -p ok"})
+        self.assertLessEqual(len(reason), 200)
+        self.assertNotIn("sk-abcdefghij", reason)
+
+    def test_whitespace_stderr_falls_back_to_stdout_detail(self):
+        with mock.patch.object(orch.subprocess, "run",
+                               return_value=FakeProc(1, "real reason here", "\n")):
+            _, reason = orch.probe_seat({"probe": "maybe-cli -p ok"})
+        self.assertIn("real reason here", reason)
+
+    def test_probe_decodes_leniently(self):
+        with mock.patch.object(orch.subprocess, "run", return_value=FakeProc(0, "ok")) as run:
+            orch.probe_seat({"probe": "maybe-cli -p ok"})
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_malformed_probe_values_are_load_errors(self):
+        for bad in (["maybe-cli", "-p", "ok"], True, "maybe-cli -p 'ok", "   "):
+            with self.assertRaises(SystemExit, msg=repr(bad)):
+                orch._validate_optional({"maybe": {"optional": True, "probe": bad}})
+        orch._validate_optional({"maybe": {"optional": True, "probe": "maybe-cli -p ok"}})
+
     def test_only_optional_seats_are_probed(self):
         cfgs = {"steady": {"cmd": "steady-cli"},
                 "maybe": {"optional": True, "probe": "maybe-cli -p ok"}}
@@ -707,7 +733,7 @@ class TestOptionalSeatsInMain(unittest.TestCase):
         bad = _OPT_ROSTER.replace("    probe: 'maybe-cli -p ok'\n", "")
         with self.assertRaises(SystemExit) as cm:
             self._run_main(bad, lambda *a, **k: FakeProc(0, "ok"))
-        self.assertIn("no `probe`", str(cm.exception))
+        self.assertIn("usable `probe`", str(cm.exception))
         self.assertIn("maybe", str(cm.exception))
 
     def test_dry_run_never_probes_or_calls_a_model(self):
